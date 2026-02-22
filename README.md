@@ -87,10 +87,12 @@ CORS_ORIGINS=https://SEU-PROJETO.vercel.app
 pm2 restart buy-alert-bot-all --update-env
 ```
 
-7. Abra o frontend no Vercel e clique em **Conectar API** para informar:
+7. Abra o frontend no Vercel e faça login no painel informando:
    - URL da API da VPS (`http://IP_DA_VPS:8787` ou domínio com HTTPS)
    - `ADMIN_USER`
    - `ADMIN_PASSWORD`
+
+8. Dentro do painel, o botão **Conectar API** reabre a tela de login para trocar credenciais.
 
 ## PM2
 

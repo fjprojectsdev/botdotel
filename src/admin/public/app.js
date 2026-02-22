@@ -67,6 +67,15 @@ const DEFAULT_MENU_CONFIG = {
 };
 
 const refs = {
+  appFrame: document.getElementById('appFrame'),
+  loginScreen: document.getElementById('loginScreen'),
+  loginForm: document.getElementById('loginForm'),
+  loginApiUrlInput: document.getElementById('loginApiUrlInput'),
+  loginUserInput: document.getElementById('loginUserInput'),
+  loginPasswordInput: document.getElementById('loginPasswordInput'),
+  loginCancelBtn: document.getElementById('loginCancelBtn'),
+  loginError: document.getElementById('loginError'),
+
   statusLine: document.getElementById('statusLine'),
   viewTitle: document.getElementById('viewTitle'),
   activeScope: document.getElementById('activeScope'),
@@ -255,13 +264,82 @@ const buildApiUrl = (path) => {
 };
 
 const setApiConnectionState = ({ apiBase, authToken, authUser }) => {
-  state.apiBase = normalizeApiBase(apiBase || state.apiBase || window.location.origin);
-  state.authToken = String(authToken || state.authToken || '');
-  state.authUser = String(authUser || state.authUser || '');
+  const resolvedApiBase = apiBase !== undefined ? apiBase : state.apiBase;
+  const resolvedAuthToken = authToken !== undefined ? authToken : state.authToken;
+  const resolvedAuthUser = authUser !== undefined ? authUser : state.authUser;
+
+  state.apiBase = normalizeApiBase(resolvedApiBase || '');
+  state.authToken = String(resolvedAuthToken || '');
+  state.authUser = String(resolvedAuthUser || '');
 
   safeStorageSet(STORAGE_KEYS.apiBase, state.apiBase);
   safeStorageSet(STORAGE_KEYS.authToken, state.authToken);
   safeStorageSet(STORAGE_KEYS.authUser, state.authUser);
+};
+
+const defaultApiBaseHint = () =>
+  isLikelyVercelHost()
+    ? 'https://api.seudominio.com'
+    : `${window.location.protocol}//${window.location.hostname}:8787`;
+
+const setLoginError = (message = '') => {
+  if (!refs.loginError) {
+    return;
+  }
+
+  const text = String(message || '').trim();
+  refs.loginError.textContent = text;
+  refs.loginError.hidden = !text;
+};
+
+const syncLoginFormDefaults = () => {
+  if (!refs.loginApiUrlInput || !refs.loginUserInput || !refs.loginPasswordInput) {
+    return;
+  }
+
+  const apiBase = state.apiBase || safeStorageGet(STORAGE_KEYS.apiBase, '') || defaultApiBaseHint();
+  const authUser = state.authUser || safeStorageGet(STORAGE_KEYS.authUser, '');
+
+  refs.loginApiUrlInput.value = apiBase;
+  refs.loginUserInput.value = authUser;
+  refs.loginPasswordInput.value = '';
+};
+
+const showLoginScreen = (message = '', { allowBack = false } = {}) => {
+  if (!refs.loginScreen || !refs.appFrame) {
+    return;
+  }
+
+  clearInterval(refreshTimer);
+  refreshTimer = null;
+
+  syncLoginFormDefaults();
+  setLoginError(message);
+
+  refs.loginScreen.hidden = false;
+  refs.appFrame.hidden = true;
+
+  if (refs.loginCancelBtn) {
+    refs.loginCancelBtn.hidden = !allowBack;
+  }
+};
+
+const hideLoginScreen = () => {
+  if (!refs.loginScreen || !refs.appFrame) {
+    return;
+  }
+
+  refs.loginScreen.hidden = true;
+  refs.appFrame.hidden = false;
+  setLoginError('');
+  if (refs.loginCancelBtn) {
+    refs.loginCancelBtn.hidden = true;
+  }
+};
+
+const toBasicToken = (username, password) => {
+  const raw = `${String(username || '')}:${String(password || '')}`;
+  return window.btoa(raw);
 };
 
 const configureApiConnection = async ({ forcePrompt = false } = {}) => {
@@ -1135,8 +1213,15 @@ const isLikelyVercelHost = () => {
   return host.endsWith('.vercel.app');
 };
 
-const ensureApiConnectivity = async ({ forcePrompt = false } = {}) => {
-  if (!(await configureApiConnection({ forcePrompt }))) {
+const ensureApiConnectivity = async ({ forcePrompt = false, allowPrompt = true } = {}) => {
+  const missingAuth = !state.apiBase || !state.authToken;
+  const shouldPrompt = allowPrompt && (forcePrompt || missingAuth);
+
+  if (shouldPrompt && !(await configureApiConnection({ forcePrompt }))) {
+    return false;
+  }
+
+  if (!state.apiBase || !state.authToken) {
     return false;
   }
 
@@ -1236,6 +1321,7 @@ const loadData = async ({ silent = false } = {}) => {
       refs.statusLine.textContent = `Falha ao atualizar (${new Date().toLocaleTimeString('pt-BR')}) [API: ${state.apiBase}]`;
       if (error?.status === 401) {
         showToast('Nao autorizado. Clique em "Conectar API" para atualizar credenciais.', true);
+        showLoginScreen('Sessao expirada ou credenciais invalidas. Faca login novamente.');
       }
       showToast(`Erro ao carregar dados: ${error.message}`, true);
     } finally {
@@ -1626,20 +1712,63 @@ const handleScheduleSave = async () => {
   await loadData({ silent: true });
 };
 
+const handleLoginSubmit = async () => {
+  const apiBase = normalizeApiBase(refs.loginApiUrlInput?.value || '');
+  const authUser = String(refs.loginUserInput?.value || '').trim();
+  const authPass = String(refs.loginPasswordInput?.value || '');
+
+  if (!apiBase) {
+    throw new Error('Informe a URL da API.');
+  }
+
+  if (!authUser) {
+    throw new Error('Informe o usuario admin.');
+  }
+
+  if (!authPass) {
+    throw new Error('Informe a senha admin.');
+  }
+
+  setApiConnectionState({
+    apiBase,
+    authUser,
+    authToken: toBasicToken(authUser, authPass)
+  });
+
+  const connected = await ensureApiConnectivity({ forcePrompt: false, allowPrompt: false });
+  if (!connected) {
+    throw new Error('Nao foi possivel autenticar com a API.');
+  }
+
+  hideLoginScreen();
+  refs.statusLine.textContent = `Conectado em ${state.apiBase}. Carregando dados...`;
+  await loadData();
+  startAutoRefresh();
+  showToast('Login realizado com sucesso.');
+};
+
 const bindEvents = () => {
   if (refs.connectApiBtn) {
-    refs.connectApiBtn.addEventListener('click', () =>
-      withButtonLock(refs.connectApiBtn, async () => {
-        const configured = await ensureApiConnectivity({ forcePrompt: true });
-        if (!configured) {
-          return;
-        }
-        showToast(`Conectado em ${state.apiBase}`);
-        await loadData();
-      }).catch((error) => {
-        showToast(error.message || 'Falha ao conectar API.', true);
-      })
-    );
+    refs.connectApiBtn.addEventListener('click', () => {
+      showLoginScreen('Atualize as credenciais para reconectar a API.', { allowBack: true });
+      refs.loginApiUrlInput?.focus();
+    });
+  }
+
+  if (refs.loginForm) {
+    refs.loginForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+      setLoginError('');
+      withButtonLock(getSubmitButton(event), handleLoginSubmit).catch((error) => {
+        setLoginError(error.message || 'Falha ao realizar login.');
+      });
+    });
+  }
+
+  if (refs.loginCancelBtn) {
+    refs.loginCancelBtn.addEventListener('click', () => {
+      hideLoginScreen();
+    });
   }
 
   refs.navButtons.forEach((button) => {
@@ -2093,7 +2222,7 @@ const startAutoRefresh = () => {
 
 const init = async () => {
   setApiConnectionState({
-    apiBase: safeStorageGet(STORAGE_KEYS.apiBase, window.location.origin),
+    apiBase: safeStorageGet(STORAGE_KEYS.apiBase, ''),
     authToken: safeStorageGet(STORAGE_KEYS.authToken, ''),
     authUser: safeStorageGet(STORAGE_KEYS.authUser, '')
   });
@@ -2102,16 +2231,16 @@ const init = async () => {
   bindEvents();
   renderView();
 
-  let connected = await ensureApiConnectivity({ forcePrompt: false });
-  if (!connected && isLikelyVercelHost()) {
-    connected = await ensureApiConnectivity({ forcePrompt: true });
-  }
+  const connected = await ensureApiConnectivity({ forcePrompt: false, allowPrompt: false });
 
   if (!connected) {
-    refs.statusLine.textContent = 'Conexao API pendente. Use o botao "Conectar API".';
+    refs.statusLine.textContent = 'Login necessario para acessar o dashboard.';
+    showLoginScreen('Conecte sua API para iniciar o painel.');
+    refs.loginApiUrlInput?.focus();
     return;
   }
 
+  hideLoginScreen();
   refs.statusLine.textContent = `Conectado em ${state.apiBase}. Carregando dados...`;
   await loadData();
   startAutoRefresh();

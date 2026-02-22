@@ -65,6 +65,96 @@ body {
   bottom: -130px;
 }
 
+.login-screen {
+  position: relative;
+  z-index: 2;
+  min-height: calc(100vh - 28px);
+  display: grid;
+  place-items: center;
+}
+
+.login-card {
+  width: min(560px, 96vw);
+  border-radius: 22px;
+  border: 1px solid var(--line);
+  background:
+    radial-gradient(circle at 86% -20%, rgba(111, 91, 255, 0.26) 0%, transparent 44%),
+    radial-gradient(circle at -4% 110%, rgba(246, 79, 193, 0.18) 0%, transparent 48%),
+    rgba(8, 11, 19, 0.96);
+  box-shadow: var(--shadow-xl);
+  padding: 28px;
+}
+
+.login-eyebrow {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #c783e8;
+}
+
+.login-title {
+  margin: 8px 0 0;
+  font-size: clamp(26px, 4vw, 36px);
+  letter-spacing: -0.03em;
+}
+
+.login-subtitle {
+  margin: 10px 0 0;
+  color: #9eabcf;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.login-form {
+  margin-top: 18px;
+  display: grid;
+  gap: 14px;
+}
+
+.login-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.login-form label {
+  display: grid;
+  gap: 6px;
+}
+
+.login-form label span {
+  font-size: 12px;
+  color: #9eabcf;
+  font-weight: 700;
+}
+
+.login-submit {
+  width: 100%;
+  margin-top: 4px;
+}
+
+.login-cancel {
+  width: 100%;
+}
+
+.login-error {
+  margin: 0;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 110, 141, 0.6);
+  background: rgba(255, 110, 141, 0.12);
+  color: #ffd4de;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 8px 10px;
+}
+
+.login-tip {
+  color: #8695bf;
+  font-size: 12px;
+}
+
 .app-frame {
   position: relative;
   z-index: 1;
@@ -1261,6 +1351,18 @@ td {
     overflow: auto;
   }
 
+  .login-screen {
+    min-height: calc(100vh - 16px);
+  }
+
+  .login-card {
+    padding: 18px;
+  }
+
+  .login-grid {
+    grid-template-columns: 1fr;
+  }
+
   .app-frame {
     grid-template-columns: 1fr;
     min-height: auto;
@@ -1337,6 +1439,7 @@ td {
   .orb,
   .sidebar,
   .header-actions,
+  .login-screen,
   .toast,
   .modal-backdrop,
   .tour-overlay,

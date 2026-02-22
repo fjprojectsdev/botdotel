@@ -10,7 +10,39 @@
     <div class="orb orb-a"></div>
     <div class="orb orb-b"></div>
 
-    <div class="app-frame">
+    <section id="loginScreen" class="login-screen">
+      <div class="login-card">
+        <p class="login-eyebrow">Dashboard Seguro</p>
+        <h1 class="login-title">Entrar no Painel</h1>
+        <p class="login-subtitle">Conecte o frontend na API da VPS com credenciais administrativas.</p>
+
+        <form id="loginForm" class="login-form">
+          <label>
+            <span>URL da API</span>
+            <input id="loginApiUrlInput" type="url" placeholder="https://api.seudominio.com" required />
+          </label>
+
+          <div class="login-grid">
+            <label>
+              <span>Usuario</span>
+              <input id="loginUserInput" type="text" autocomplete="username" required />
+            </label>
+            <label>
+              <span>Senha</span>
+              <input id="loginPasswordInput" type="password" autocomplete="current-password" required />
+            </label>
+          </div>
+
+          <p id="loginError" class="login-error" hidden></p>
+
+          <button id="loginCancelBtn" class="btn btn-ghost login-cancel" type="button" hidden>Voltar</button>
+          <button class="btn login-submit" type="submit">Entrar</button>
+          <small class="login-tip">As credenciais ficam salvas no navegador para reconexao automatica.</small>
+        </form>
+      </div>
+    </section>
+
+    <div id="appFrame" class="app-frame" hidden>
       <aside class="sidebar">
         <div class="brand">
           <div class="brand-mark">9BOT</div>
