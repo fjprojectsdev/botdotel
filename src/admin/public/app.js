@@ -66,7 +66,7 @@ const SECURITY_LOCK_KEYS = ['antispam', 'antilink', 'antiflood', 'captcha', 'ant
 
 const DEFAULT_MENU_CONFIG = {
   greeting: '( * ) Ola, @(pushName)!\\nBem-vindo ao menu da sua comunidade.',
-  siteUrl: '9bot.com.br',
+  siteUrl: 'imavyagent.com.br',
   description: 'Escolha uma categoria abaixo para receber noticias, analises e automacoes do grupo.',
   buttons: [
     { emoji: '📰', label: 'Ultimas Noticias do Livecoins', command: '!ultimas' },
