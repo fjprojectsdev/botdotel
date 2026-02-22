@@ -316,6 +316,19 @@ const showLoginScreen = (message = '', { allowBack = false } = {}) => {
     return;
   }
 
+  if (refs.previewModal) {
+    refs.previewModal.hidden = true;
+  }
+  if (refs.scheduleModal) {
+    refs.scheduleModal.hidden = true;
+  }
+  if (refs.menuBuilderModal) {
+    refs.menuBuilderModal.hidden = true;
+  }
+  if (refs.tourOverlay) {
+    refs.tourOverlay.hidden = true;
+  }
+
   clearInterval(refreshTimer);
   refreshTimer = null;
 
@@ -420,7 +433,15 @@ const apiFetch = async (url, options = {}) => {
     headers.Authorization = `Basic ${state.authToken}`;
   }
 
-  const response = await fetch(buildApiUrl(url), {
+  let requestUrl = '';
+  try {
+    requestUrl = buildApiUrl(url);
+  } catch (error) {
+    showLoginScreen('API nao configurada. Faca login novamente.');
+    throw error;
+  }
+
+  const response = await fetch(requestUrl, {
     ...fetchOptions,
     headers
   });
@@ -431,6 +452,9 @@ const apiFetch = async (url, options = {}) => {
 
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
+    if (response.status === 401) {
+      showLoginScreen('Sessao expirada. Faca login novamente.');
+    }
     const error = new Error(payload?.error || `Request failed (${response.status})`);
     error.status = response.status;
     throw error;
