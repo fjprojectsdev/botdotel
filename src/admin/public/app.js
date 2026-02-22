@@ -945,7 +945,7 @@ const renderStats = () => {
 
   refs.statusLine.textContent = `Atualizado ${new Date().toLocaleTimeString('pt-BR')} | ${
     txs.length
-  } compras no periodo | uptime ${stats.uptimeSec || 0}s`;
+  } compras no periodo | minUSD ${formatUsd(stats.minUsdAlert || 0)} | uptime ${stats.uptimeSec || 0}s`;
 
   if (refs.topGroups) {
     refs.topGroups.textContent = formatCompact(stats.groups?.total || state.groups.length);

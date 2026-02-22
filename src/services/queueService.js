@@ -74,29 +74,12 @@ class QueueService {
       const enriched = await this.priceService.enrichSwap(rawEvent);
       const tokenAmount = Number(enriched.tokenAmount);
       const usdValue = Number(enriched.usdValue);
+      const hasReliableUsd = Number.isFinite(usdValue) && usdValue > 0;
+      const normalizedUsdValue = hasReliableUsd ? usdValue : 0;
 
       if (!Number.isFinite(tokenAmount) || tokenAmount <= 0) {
         return;
       }
-
-      if (!Number.isFinite(usdValue) || usdValue <= 0) {
-        this.logger.debug(
-          {
-            network: enriched.network,
-            hash: enriched.hash,
-            token: enriched.tokenSymbol
-          },
-          'skipping event without reliable usd value'
-        );
-        return;
-      }
-
-      if (this.minUsdAlert > 0 && usdValue < this.minUsdAlert) {
-        return;
-      }
-
-      enriched.whale = this.formatService.classifyWhale(usdValue);
-      const message = this.formatService.formatBuyAlert(enriched);
 
       const saved = this.tokenModel.saveTransaction({
         token: tokenKey,
@@ -104,13 +87,42 @@ class QueueService {
         hash: enriched.hash,
         buyer: enriched.buyer || 'unknown',
         amount: tokenAmount,
-        usd_value: usdValue,
+        usd_value: normalizedUsdValue,
         timestamp: enriched.timestamp || new Date().toISOString()
       });
 
       if (!saved) {
         return;
       }
+
+      if (!hasReliableUsd) {
+        this.logger.debug(
+          {
+            network: enriched.network,
+            hash: enriched.hash,
+            token: enriched.tokenSymbol
+          },
+          'transaction stored without reliable usd value; alert skipped'
+        );
+        return;
+      }
+
+      if (this.minUsdAlert > 0 && usdValue < this.minUsdAlert) {
+        this.logger.debug(
+          {
+            network: enriched.network,
+            hash: enriched.hash,
+            token: enriched.tokenSymbol,
+            usdValue,
+            minUsdAlert: this.minUsdAlert
+          },
+          'transaction stored below min usd alert; telegram alert skipped'
+        );
+        return;
+      }
+
+      enriched.whale = this.formatService.classifyWhale(usdValue);
+      const message = this.formatService.formatBuyAlert(enriched);
 
       await this.telegramQueue.add(() => this.telegramClient.sendAlert(message));
 
