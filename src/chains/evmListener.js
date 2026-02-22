@@ -82,6 +82,10 @@ class EvmListener {
     const latest = await this.provider.getBlockNumber();
     if (resetBlock || this.lastProcessedBlock === null) {
       this.lastProcessedBlock = Math.max(0, latest - 1);
+    } else if (this.lastProcessedBlock > latest) {
+      // Some public RPC clusters can return a lower tip temporarily.
+      // Clamp cursor to avoid invalid block-range requests.
+      this.lastProcessedBlock = Math.max(0, latest - 1);
     }
 
     this.logger.info({ network: this.network.key, latestBlock: latest }, 'evm rpc connected');
@@ -240,17 +244,26 @@ class EvmListener {
 
         backoff = 2_000;
       } catch (error) {
+        const errorMessage = String(error?.message || '');
+        const invalidBlockRange = /invalid block range params/i.test(errorMessage);
+
         this.logger.error(
           {
             network: this.network.key,
-            err: error.message,
+            err: errorMessage,
             backoff
           },
           'evm poll error; reconnecting'
         );
 
         try {
-          await this.reconnectWithBackoff(backoff);
+          if (invalidBlockRange) {
+            await sleep(backoff);
+            await this.connectProvider(true);
+            await this.syncTrackedPairs();
+          } else {
+            await this.reconnectWithBackoff(backoff);
+          }
           backoff = Math.min(backoff * 2, 30_000);
         } catch (reconnectError) {
           this.logger.error(
