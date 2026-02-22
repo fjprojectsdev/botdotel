@@ -369,10 +369,30 @@
                 <span class="panel-hint">Ajustes em tempo real</span>
               </div>
 
-              <form id="settingsForm" class="form-grid form-grid-inline">
+              <form id="settingsForm" class="form-grid">
                 <label>
                   <span>Filtro minimo (USD)</span>
                   <input id="minUsdInput" name="minUsdAlert" type="number" min="0" step="1" required />
+                </label>
+                <label class="field-span-all">
+                  <span>Imagem padrao - Alertas de Compra (URL)</span>
+                  <input
+                    id="buyAlertImageUrlInput"
+                    name="buyAlertImageUrl"
+                    type="url"
+                    placeholder="https://cdn.seudominio.com/imagens/compra.jpg"
+                  />
+                  <small class="field-help">Se preenchido, o bot envia foto + texto nos alertas de compra.</small>
+                </label>
+                <label class="field-span-all">
+                  <span>Imagem padrao - Lembretes e Avisos (URL)</span>
+                  <input
+                    id="scheduleImageUrlInput"
+                    name="scheduleImageUrl"
+                    type="url"
+                    placeholder="https://cdn.seudominio.com/imagens/aviso.jpg"
+                  />
+                  <small class="field-help">Usada em agendamentos quando nao houver imagem especifica no item.</small>
                 </label>
                 <button class="btn btn-primary" type="submit">Salvar</button>
               </form>
@@ -453,6 +473,17 @@
           <label>
             <span>Mensagem</span>
             <textarea id="scheduleContentInput" name="content" rows="4" placeholder="Digite sua mensagem..." required></textarea>
+          </label>
+
+          <label>
+            <span>Imagem (URL, opcional)</span>
+            <input
+              id="scheduleMediaUrlInput"
+              name="media_url"
+              type="url"
+              placeholder="https://cdn.seudominio.com/imagens/lembrete.jpg"
+            />
+            <small class="field-help">Se vazio, usa a imagem padrao configurada em Configuracoes.</small>
           </label>
 
           <div>

@@ -66,6 +66,26 @@ const normalizeList = (value) => {
   );
 };
 
+const normalizeMediaUrl = (value, fieldName = 'media url') => {
+  const raw = String(value || '').trim();
+  if (!raw) {
+    return '';
+  }
+
+  let parsed = null;
+  try {
+    parsed = new URL(raw);
+  } catch (_error) {
+    throw new Error(`invalid ${fieldName}`);
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`invalid ${fieldName}`);
+  }
+
+  return parsed.toString();
+};
+
 const normalizeOrigin = (value) => String(value || '').trim().replace(/\/+$/, '');
 
 const parseCorsOrigins = (rawValue) => {
@@ -324,6 +344,7 @@ const buildSchedulePayload = (body) => {
   return {
     kind: String(body.kind || 'message').trim().toLowerCase(),
     content: String(body.content || '').trim(),
+    media_url: normalizeMediaUrl(body.media_url || body.mediaUrl || '', 'schedule media url'),
     group_ids: normalizeList(body.group_ids || body.groupIds || []),
     send_at: body.send_at || body.sendAt,
     recurrence: String(body.recurrence || 'none').trim().toLowerCase(),
@@ -960,9 +981,20 @@ const startAdminServer = async ({
 
       const targets = normalizeList(schedule.group_ids);
       const message = scheduleMessageText(schedule);
+      let mediaUrl = '';
+
+      try {
+        mediaUrl = normalizeMediaUrl(
+          schedule.media_url || tokenModel.getSetting('media_schedule_url') || '',
+          'schedule media url'
+        );
+      } catch (error) {
+        logger.warn({ scheduleId: schedule.id, err: error.message }, 'invalid schedule media url; sending text only');
+      }
 
       await telegramClient.sendAlert(message, {
-        chatIds: targets.length ? targets : undefined
+        chatIds: targets.length ? targets : undefined,
+        mediaUrl: mediaUrl || undefined
       });
 
       if (schedule.recurrence === 'daily') {
@@ -1035,6 +1067,25 @@ const startAdminServer = async ({
         tokenModel.setSetting('menu_config', JSON.stringify(menuConfig));
       }
 
+      const hasBuyAlertImageSetting = body.buyAlertImageUrl !== undefined || body.media_buy_alert_url !== undefined;
+      if (hasBuyAlertImageSetting) {
+        const buyAlertImageUrl = normalizeMediaUrl(
+          body.buyAlertImageUrl !== undefined ? body.buyAlertImageUrl : body.media_buy_alert_url,
+          'buy alert image url'
+        );
+        tokenModel.setSetting('media_buy_alert_url', buyAlertImageUrl);
+      }
+
+      const hasScheduleImageSetting =
+        body.scheduleImageUrl !== undefined || body.media_schedule_url !== undefined;
+      if (hasScheduleImageSetting) {
+        const scheduleImageUrl = normalizeMediaUrl(
+          body.scheduleImageUrl !== undefined ? body.scheduleImageUrl : body.media_schedule_url,
+          'schedule image url'
+        );
+        tokenModel.setSetting('media_schedule_url', scheduleImageUrl);
+      }
+
       const settings = tokenModel.getAllSettings();
       return res.json({
         settings,
@@ -1060,9 +1111,11 @@ const startAdminServer = async ({
     asyncRoute(async (req, res) => {
       const message = String(req.body?.message || 'Dashboard test alert').trim();
       const chatId = String(req.body?.chatId || '').trim();
+      const mediaUrl = normalizeMediaUrl(req.body?.mediaUrl || '', 'test media url');
 
       await telegramClient.sendAlert(message, {
-        chatIds: chatId ? [chatId] : undefined
+        chatIds: chatId ? [chatId] : undefined,
+        mediaUrl: mediaUrl || undefined
       });
 
       res.json({ ok: true });

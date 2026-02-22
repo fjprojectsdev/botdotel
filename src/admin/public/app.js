@@ -128,6 +128,8 @@ const refs = {
 
   settingsForm: document.getElementById('settingsForm'),
   minUsdInput: document.getElementById('minUsdInput'),
+  buyAlertImageUrlInput: document.getElementById('buyAlertImageUrlInput'),
+  scheduleImageUrlInput: document.getElementById('scheduleImageUrlInput'),
   tokenForm: document.getElementById('tokenForm'),
   networkSelect: document.getElementById('networkSelect'),
 
@@ -169,6 +171,7 @@ const refs = {
   scheduleIdInput: document.getElementById('scheduleIdInput'),
   scheduleKindSelect: document.getElementById('scheduleKindSelect'),
   scheduleContentInput: document.getElementById('scheduleContentInput'),
+  scheduleMediaUrlInput: document.getElementById('scheduleMediaUrlInput'),
   scheduleGroupChecklist: document.getElementById('scheduleGroupChecklist'),
   scheduleSendAtInput: document.getElementById('scheduleSendAtInput'),
   scheduleRecurrenceSelect: document.getElementById('scheduleRecurrenceSelect'),
@@ -285,6 +288,26 @@ const normalizeApiBase = (value) => {
     return '';
   }
   return raw.replace(/\/+$/, '');
+};
+
+const normalizeOptionalMediaUrl = (value, fieldLabel = 'URL de imagem') => {
+  const raw = String(value || '').trim();
+  if (!raw) {
+    return '';
+  }
+
+  let parsed = null;
+  try {
+    parsed = new URL(raw);
+  } catch (_error) {
+    throw new Error(`${fieldLabel} invalida.`);
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`${fieldLabel} invalida.`);
+  }
+
+  return parsed.toString();
 };
 
 const buildApiUrl = (path) => {
@@ -1052,7 +1075,10 @@ const renderWhales = () => {
 const renderRuntimeMeta = () => {
   const stats = state.stats || {};
   const runtime = state.settings?.runtime || {};
+  const settings = state.settings?.settings || {};
   const enabledNetworks = runtime.enabledNetworks || [];
+  const buyMedia = String(settings.media_buy_alert_url || '').trim();
+  const scheduleMedia = String(settings.media_schedule_url || '').trim();
 
   refs.runtimeMeta.innerHTML = [
     `<div>API conectada: <strong>${escapeHtml(state.apiBase || '-')}</strong></div>`,
@@ -1062,7 +1088,9 @@ const renderRuntimeMeta = () => {
     }</strong></div>`,
     `<div>Alertas recentes registrados: <strong>${stats.recentAlerts || 0}</strong></div>`,
     `<div>Agendamentos pendentes: <strong>${stats.schedules?.pending || 0}</strong></div>`,
-    `<div>Botoes do menu inicial: <strong>${state.menuConfig?.buttons?.length || 0}</strong></div>`
+    `<div>Botoes do menu inicial: <strong>${state.menuConfig?.buttons?.length || 0}</strong></div>`,
+    `<div>Imagem alertas: <strong>${escapeHtml(buyMedia ? shortText(buyMedia, 24, 18) : 'desativada')}</strong></div>`,
+    `<div>Imagem avisos: <strong>${escapeHtml(scheduleMedia ? shortText(scheduleMedia, 24, 18) : 'desativada')}</strong></div>`
   ].join('');
 };
 
@@ -1283,6 +1311,7 @@ const renderScheduleGroupChecklist = (selectedGroups = []) => {
 
 const renderSchedules = () => {
   const query = state.scheduleSearch.trim().toLowerCase();
+  const defaultScheduleMedia = String(state.settings?.settings?.media_schedule_url || '').trim();
   const schedules = query
     ? state.schedules.filter((schedule) => {
         const groups = parseGroupIds(schedule.group_ids)
@@ -1313,6 +1342,7 @@ const renderSchedules = () => {
     .map((schedule) => {
       const groups = parseGroupIds(schedule.group_ids);
       const groupLabel = groups.map((item) => getGroupLabelById(item)).join(', ');
+      const mediaUrl = String(schedule.media_url || '').trim();
       const status = String(schedule.status || 'pending').toLowerCase();
       const statusMap = {
         pending: 'Pendente',
@@ -1340,6 +1370,13 @@ const renderSchedules = () => {
         <td>
           <strong>${escapeHtml(shortText(schedule.content, 48, 0))}</strong>
           <div class="panel-hint">${escapeHtml(groupLabel || '-')}</div>
+          ${
+            mediaUrl
+              ? `<div class="panel-hint">Imagem: ${escapeHtml(shortText(mediaUrl, 46, 20))}</div>`
+              : defaultScheduleMedia
+                ? '<div class="panel-hint">Imagem: padrao configurada</div>'
+                : '<div class="panel-hint">Imagem: sem imagem</div>'
+          }
         </td>
         <td>${schedule.kind === 'poll' ? 'Enquete' : 'Mensagem'}</td>
         <td>${escapeHtml(new Date(schedule.send_at).toLocaleString('pt-BR'))}</td>
@@ -1422,6 +1459,11 @@ const renderSettings = () => {
     0;
   const minUsd = Number(rawMinUsd);
   refs.minUsdInput.value = Number.isFinite(minUsd) ? String(minUsd) : '0';
+
+  const buyAlertImageUrl = String(state.settings?.settings?.media_buy_alert_url || '').trim();
+  const scheduleImageUrl = String(state.settings?.settings?.media_schedule_url || '').trim();
+  refs.buyAlertImageUrlInput.value = buyAlertImageUrl;
+  refs.scheduleImageUrlInput.value = scheduleImageUrl;
 };
 
 const isLikelyVercelHost = () => {
@@ -1603,6 +1645,7 @@ const openScheduleModal = (schedule = null) => {
   refs.scheduleIdInput.value = editing ? String(schedule.id) : '';
   refs.scheduleKindSelect.value = editing ? schedule.kind || 'message' : 'message';
   refs.scheduleContentInput.value = editing ? schedule.content || '' : '';
+  refs.scheduleMediaUrlInput.value = editing ? String(schedule.media_url || '').trim() : '';
   refs.scheduleRecurrenceSelect.value = editing ? schedule.recurrence || 'none' : 'none';
   refs.scheduleSendAtInput.value = editing
     ? toLocalDateTimeInput(schedule.send_at)
@@ -1902,9 +1945,19 @@ const handleSettingsSave = async () => {
     return;
   }
 
+  const buyAlertImageUrl = normalizeOptionalMediaUrl(refs.buyAlertImageUrlInput.value || '', 'URL de imagem de compra');
+  const scheduleImageUrl = normalizeOptionalMediaUrl(
+    refs.scheduleImageUrlInput.value || '',
+    'URL de imagem de lembretes'
+  );
+
   await apiFetch('/api/settings', {
     method: 'PUT',
-    body: JSON.stringify({ minUsdAlert })
+    body: JSON.stringify({
+      minUsdAlert,
+      buyAlertImageUrl,
+      scheduleImageUrl
+    })
   });
 
   showToast('Configuracoes salvas.');
@@ -1932,6 +1985,7 @@ const handleScheduleSave = async () => {
   const payload = {
     kind: refs.scheduleKindSelect.value,
     content: String(refs.scheduleContentInput.value || '').trim(),
+    media_url: normalizeOptionalMediaUrl(refs.scheduleMediaUrlInput.value || '', 'URL de imagem do agendamento'),
     group_ids: selectedGroups,
     send_at: parsed.toISOString(),
     recurrence: refs.scheduleRecurrenceSelect.value,
@@ -2071,11 +2125,13 @@ const bindEvents = () => {
     withButtonLock(refs.testAlertBtn, async () => {
       closeActionsMenu();
       const activeGroup = state.groups.find((group) => isEnabled(group.enabled));
+      const mediaUrl = normalizeOptionalMediaUrl(state.settings?.settings?.media_buy_alert_url || '');
       await apiFetch('/api/test-alert', {
         method: 'POST',
         body: JSON.stringify({
           chatId: activeGroup ? activeGroup.chat_id : '',
-          message: `Teste manual do painel - ${new Date().toLocaleString('pt-BR')}`
+          message: `Teste manual do painel - ${new Date().toLocaleString('pt-BR')}`,
+          mediaUrl: mediaUrl || undefined
         })
       });
       showToast('Teste enviado.');

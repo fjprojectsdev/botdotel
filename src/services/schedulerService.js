@@ -51,6 +51,33 @@ class SchedulerService {
     return `${prefix}\n\n${schedule.content}`;
   }
 
+  normalizeMediaUrl(value) {
+    const raw = String(value || '').trim();
+    if (!raw) {
+      return '';
+    }
+
+    try {
+      const parsed = new URL(raw);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        return '';
+      }
+      return parsed.toString();
+    } catch (_error) {
+      return '';
+    }
+  }
+
+  resolveScheduleMediaUrl(schedule) {
+    const scheduleMedia = this.normalizeMediaUrl(schedule?.media_url);
+    if (scheduleMedia) {
+      return scheduleMedia;
+    }
+
+    const fallback = this.tokenModel.getSetting('media_schedule_url');
+    return this.normalizeMediaUrl(fallback);
+  }
+
   computeNextDailyIso(sendAtIso) {
     const current = new Date(sendAtIso);
     if (Number.isNaN(current.getTime())) {
@@ -71,9 +98,11 @@ class SchedulerService {
     try {
       const targetGroups = this.parseGroupIds(schedule.group_ids);
       const message = this.buildScheduleMessage(schedule);
+      const mediaUrl = this.resolveScheduleMediaUrl(schedule);
 
       await this.telegramClient.sendAlert(message, {
-        chatIds: targetGroups.length ? targetGroups : undefined
+        chatIds: targetGroups.length ? targetGroups : undefined,
+        mediaUrl: mediaUrl || undefined
       });
 
       if (schedule.recurrence === 'daily') {

@@ -135,6 +135,50 @@ class TelegramClient {
     );
   }
 
+  normalizeMediaUrl(value) {
+    const raw = String(value || '').trim();
+    if (!raw) {
+      return '';
+    }
+
+    try {
+      const parsed = new URL(raw);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        return '';
+      }
+      return parsed.toString();
+    } catch (_error) {
+      return '';
+    }
+  }
+
+  async sendPhoto(chatId, mediaUrl, caption = '', options = {}) {
+    if (!this.bot) {
+      return;
+    }
+
+    const targetChatId = String(chatId || '').trim();
+    const photo = this.normalizeMediaUrl(mediaUrl);
+    if (!targetChatId) {
+      throw new Error('chat id is required');
+    }
+    if (!photo) {
+      throw new Error('media url is required');
+    }
+
+    const captionText = String(caption || '').trim();
+
+    return this.sendWithRetry(
+      targetChatId,
+      () =>
+        this.bot.sendPhoto(targetChatId, photo, {
+          ...(captionText ? { caption: captionText } : {}),
+          ...options
+        }),
+      'sendPhoto'
+    );
+  }
+
   async sendAlert(message, options = {}) {
     if (!this.bot) {
       return;
@@ -148,10 +192,34 @@ class TelegramClient {
       return;
     }
 
+    const mediaUrl = this.normalizeMediaUrl(options.mediaUrl);
+    const messageText = String(message || '').trim();
+
     for (const groupId of targetGroups) {
       try {
-        await this.sendMessage(groupId, message);
+        if (mediaUrl) {
+          if (messageText.length <= 1024) {
+            await this.sendPhoto(groupId, mediaUrl, messageText);
+          } else {
+            await this.sendPhoto(groupId, mediaUrl, '📣 Atualizacao');
+            await this.sendMessage(groupId, messageText);
+          }
+        } else {
+          await this.sendMessage(groupId, messageText);
+        }
       } catch (error) {
+        if (mediaUrl) {
+          try {
+            await this.sendMessage(groupId, messageText);
+            this.logger.warn(
+              { groupId, err: error.message },
+              'failed to send media alert; fallback to text message sent'
+            );
+            continue;
+          } catch (_fallbackError) {
+            // falls through to error log below
+          }
+        }
         this.logger.error({ groupId, err: error.message }, 'failed to send alert to group');
       }
     }

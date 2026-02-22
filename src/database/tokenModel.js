@@ -523,6 +523,7 @@ class TokenModel {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         kind TEXT NOT NULL,
         content TEXT NOT NULL,
+        media_url TEXT,
         group_ids TEXT NOT NULL,
         send_at TEXT NOT NULL,
         recurrence TEXT NOT NULL DEFAULT 'none',
@@ -577,6 +578,13 @@ class TokenModel {
     });
 
     tx(rows);
+
+    const scheduleColumns = this.db.prepare('PRAGMA table_info(schedules)').all();
+    const hasScheduleMediaUrl = scheduleColumns.some((column) => column.name === 'media_url');
+    if (!hasScheduleMediaUrl) {
+      this.db.exec(`ALTER TABLE schedules ADD COLUMN media_url TEXT`);
+      this.logger.info('database migration applied: schedules.media_url');
+    }
   }
 
   prepareStatements() {
@@ -1018,19 +1026,19 @@ class TokenModel {
     `);
 
     this.statements.insertSchedule = this.db.prepare(`
-      INSERT INTO schedules (kind, content, group_ids, send_at, recurrence, status, last_error, updated_at)
-      VALUES (@kind, @content, @group_ids, @send_at, @recurrence, @status, @last_error, @updated_at)
+      INSERT INTO schedules (kind, content, media_url, group_ids, send_at, recurrence, status, last_error, updated_at)
+      VALUES (@kind, @content, @media_url, @group_ids, @send_at, @recurrence, @status, @last_error, @updated_at)
     `);
 
     this.statements.selectSchedules = this.db.prepare(`
-      SELECT id, kind, content, group_ids, send_at, recurrence, status, last_error, created_at, updated_at
+      SELECT id, kind, content, media_url, group_ids, send_at, recurrence, status, last_error, created_at, updated_at
       FROM schedules
       ORDER BY datetime(send_at) DESC
       LIMIT ?
     `);
 
     this.statements.selectScheduleById = this.db.prepare(`
-      SELECT id, kind, content, group_ids, send_at, recurrence, status, last_error, created_at, updated_at
+      SELECT id, kind, content, media_url, group_ids, send_at, recurrence, status, last_error, created_at, updated_at
       FROM schedules
       WHERE id = ?
       LIMIT 1
@@ -1041,6 +1049,7 @@ class TokenModel {
       SET
         kind = @kind,
         content = @content,
+        media_url = @media_url,
         group_ids = @group_ids,
         send_at = @send_at,
         recurrence = @recurrence,
@@ -1075,7 +1084,7 @@ class TokenModel {
     `);
 
     this.statements.selectDueSchedules = this.db.prepare(`
-      SELECT id, kind, content, group_ids, send_at, recurrence, status, last_error, created_at, updated_at
+      SELECT id, kind, content, media_url, group_ids, send_at, recurrence, status, last_error, created_at, updated_at
       FROM schedules
       WHERE status = 'pending' AND datetime(send_at) <= datetime(?)
       ORDER BY datetime(send_at) ASC
@@ -1696,9 +1705,30 @@ class TokenModel {
     );
   }
 
+  normalizeMediaUrl(value, { allowEmpty = true } = {}) {
+    const raw = String(value || '').trim();
+    if (!raw) {
+      return allowEmpty ? null : '';
+    }
+
+    let parsed = null;
+    try {
+      parsed = new URL(raw);
+    } catch (_error) {
+      throw new Error('invalid schedule media_url');
+    }
+
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new Error('invalid schedule media_url');
+    }
+
+    return parsed.toString();
+  }
+
   normalizeSchedulePayload(input) {
     const kind = String(input.kind || 'message').trim().toLowerCase();
     const content = String(input.content || '').trim();
+    const media_url = this.normalizeMediaUrl(input.media_url || input.mediaUrl || null);
     const groupIds = this.parseGroupIds(input.group_ids || input.groupIds);
 
     const rawSendAt = String(input.send_at || input.sendAt || '').trim();
@@ -1733,6 +1763,7 @@ class TokenModel {
     return {
       kind,
       content,
+      media_url,
       group_ids: groupIds.join(','),
       send_at: parsedDate.toISOString(),
       recurrence,

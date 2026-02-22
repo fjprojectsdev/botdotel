@@ -45,6 +45,28 @@ class QueueService {
     return `${event.network}:${token}`;
   }
 
+  normalizeMediaUrl(value) {
+    const raw = String(value || '').trim();
+    if (!raw) {
+      return '';
+    }
+
+    try {
+      const parsed = new URL(raw);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        return '';
+      }
+      return parsed.toString();
+    } catch (_error) {
+      return '';
+    }
+  }
+
+  getBuyAlertMediaUrl() {
+    const saved = this.tokenModel.getSetting('media_buy_alert_url');
+    return this.normalizeMediaUrl(saved);
+  }
+
   enqueueBuy(rawEvent) {
     this.processingQueue
       .add(() => this.processBuy(rawEvent))
@@ -123,15 +145,21 @@ class QueueService {
 
       enriched.whale = this.formatService.classifyWhale(usdValue);
       const message = this.formatService.formatBuyAlert(enriched);
+      const mediaUrl = this.getBuyAlertMediaUrl();
 
-      await this.telegramQueue.add(() => this.telegramClient.sendAlert(message));
+      await this.telegramQueue.add(() =>
+        this.telegramClient.sendAlert(message, {
+          mediaUrl: mediaUrl || undefined
+        })
+      );
 
       this.logger.info(
         {
           network: enriched.network,
           token: enriched.tokenSymbol,
           hash: enriched.hash,
-          usdValue
+          usdValue,
+          media: Boolean(mediaUrl)
         },
         'buy alert sent'
       );
