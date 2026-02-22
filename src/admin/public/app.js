@@ -100,9 +100,17 @@ const refs = {
   statusLine: document.getElementById('statusLine'),
   viewTitle: document.getElementById('viewTitle'),
   activeScope: document.getElementById('activeScope'),
+  topGroups: document.getElementById('topGroups'),
+  topMembers: document.getElementById('topMembers'),
+  topVolume: document.getElementById('topVolume'),
+  topAlerts: document.getElementById('topAlerts'),
   reloadBtn: document.getElementById('reloadBtn'),
   testAlertBtn: document.getElementById('testAlertBtn'),
   exportBtn: document.getElementById('exportBtn'),
+  openLoginBtn: document.getElementById('openLoginBtn'),
+  actionsMenuBtn: document.getElementById('actionsMenuBtn'),
+  actionsMenu: document.getElementById('actionsMenu'),
+  themeSelect: document.getElementById('themeSelect'),
   periodSelect: document.getElementById('periodSelect'),
   navButtons: Array.from(document.querySelectorAll('[data-nav-view]')),
   viewSections: Array.from(document.querySelectorAll('.view')),
@@ -251,7 +259,8 @@ const TOUR_STEPS = [
 const STORAGE_KEYS = {
   apiBase: 'buy_alert_admin_api_base',
   authToken: 'buy_alert_admin_auth_token',
-  authUser: 'buy_alert_admin_auth_user'
+  authUser: 'buy_alert_admin_auth_user',
+  theme: 'buy_alert_admin_theme'
 };
 
 const safeStorageGet = (key, fallback = '') => {
@@ -382,6 +391,50 @@ const toBasicToken = (username, password) => {
 
 const hasActiveSession = () => Boolean(state.apiBase && state.authToken);
 
+const normalizeTheme = (value) => {
+  const theme = String(value || '').trim().toLowerCase();
+  if (['blue', 'purple', 'green', 'light'].includes(theme)) {
+    return theme;
+  }
+  return '';
+};
+
+const applyTheme = (value, { persist = true } = {}) => {
+  const theme = normalizeTheme(value);
+  if (theme) {
+    document.body.dataset.theme = theme;
+  } else {
+    delete document.body.dataset.theme;
+  }
+
+  if (refs.themeSelect) {
+    refs.themeSelect.value = theme;
+  }
+
+  if (persist) {
+    safeStorageSet(STORAGE_KEYS.theme, theme);
+  }
+};
+
+const closeActionsMenu = () => {
+  if (refs.actionsMenu) {
+    refs.actionsMenu.hidden = true;
+  }
+  if (refs.actionsMenuBtn) {
+    refs.actionsMenuBtn.setAttribute('aria-expanded', 'false');
+  }
+};
+
+const toggleActionsMenu = () => {
+  if (!refs.actionsMenu || !refs.actionsMenuBtn) {
+    return;
+  }
+
+  const willOpen = refs.actionsMenu.hidden;
+  refs.actionsMenu.hidden = !willOpen;
+  refs.actionsMenuBtn.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+};
+
 const closeAllOverlays = () => {
   if (refs.previewModal) {
     refs.previewModal.hidden = true;
@@ -395,6 +448,7 @@ const closeAllOverlays = () => {
   if (refs.tourOverlay) {
     refs.tourOverlay.hidden = true;
   }
+  closeActionsMenu();
 
   document.querySelectorAll('.modal-backdrop, .tour-overlay').forEach((node) => {
     node.hidden = true;
@@ -878,6 +932,7 @@ const renderStats = () => {
   const stats = state.stats || {};
   const txs = state.filteredTransactions;
   const totalUsd = txs.reduce((sum, tx) => sum + (Number(tx.usd_value) || 0), 0);
+  const activeMembers = state.members.filter((item) => String(item.status || '').toLowerCase() === 'ativo').length;
 
   refs.statBuys.textContent = formatCompact(txs.length);
   refs.statVolume.textContent = formatUsd(totalUsd);
@@ -891,6 +946,19 @@ const renderStats = () => {
   refs.statusLine.textContent = `Atualizado ${new Date().toLocaleTimeString('pt-BR')} | ${
     txs.length
   } compras no periodo | uptime ${stats.uptimeSec || 0}s`;
+
+  if (refs.topGroups) {
+    refs.topGroups.textContent = formatCompact(stats.groups?.total || state.groups.length);
+  }
+  if (refs.topMembers) {
+    refs.topMembers.textContent = formatCompact(activeMembers || state.members.length);
+  }
+  if (refs.topVolume) {
+    refs.topVolume.textContent = formatUsd(totalUsd);
+  }
+  if (refs.topAlerts) {
+    refs.topAlerts.textContent = formatCompact(stats.recentAlerts || 0);
+  }
 };
 
 const renderTokenCloud = () => {
@@ -1035,8 +1103,10 @@ const renderGroups = () => {
           </div>
         </div>
         <div class="group-status">
-          <span><i class="status-dot ${enabled ? 'ok' : 'off'}"></i>${enabled ? 'Ativo' : 'Pausado'}</span>
-          <span>${memberHint} membros</span>
+          <span class="status-badge ${enabled ? 'status-badge-ok' : 'status-badge-off'}"><i class="status-dot ${
+            enabled ? 'ok' : 'off'
+          }"></i>${enabled ? 'Ativo' : 'Pausado'}</span>
+          <span class="group-members-count">${memberHint} membros</span>
         </div>
         <div class="group-permissions">
           ${permissionsHtml}
@@ -1943,8 +2013,37 @@ const bindEvents = () => {
     });
   }
 
+  if (refs.actionsMenuBtn) {
+    refs.actionsMenuBtn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      toggleActionsMenu();
+    });
+  }
+
+  if (refs.actionsMenu) {
+    refs.actionsMenu.addEventListener('click', (event) => {
+      event.stopPropagation();
+    });
+  }
+
+  if (refs.openLoginBtn) {
+    refs.openLoginBtn.addEventListener('click', () => {
+      closeActionsMenu();
+      showLoginScreen('Atualize as credenciais para reconectar a API.', { allowBack: true });
+      refs.loginApiUrlInput?.focus();
+    });
+  }
+
+  if (refs.themeSelect) {
+    refs.themeSelect.addEventListener('change', (event) => {
+      applyTheme(event.target.value, { persist: true });
+      closeActionsMenu();
+    });
+  }
+
   refs.navButtons.forEach((button) => {
     button.addEventListener('click', () => {
+      closeActionsMenu();
       state.currentView = button.dataset.navView || 'overview';
       renderView();
     });
@@ -1970,6 +2069,7 @@ const bindEvents = () => {
 
   refs.testAlertBtn.addEventListener('click', () =>
     withButtonLock(refs.testAlertBtn, async () => {
+      closeActionsMenu();
       const activeGroup = state.groups.find((group) => isEnabled(group.enabled));
       await apiFetch('/api/test-alert', {
         method: 'POST',
@@ -1983,6 +2083,7 @@ const bindEvents = () => {
   );
 
   refs.exportBtn.addEventListener('click', () => {
+    closeActionsMenu();
     window.print();
   });
 
@@ -2195,9 +2296,12 @@ const bindEvents = () => {
     if (!refs.tourOverlay.hidden) {
       closeTour();
     }
+    closeActionsMenu();
   });
 
   document.addEventListener('click', (event) => {
+    closeActionsMenu();
+
     const trigger = event.target.closest('[data-action]');
     if (!trigger) {
       return;
@@ -2459,6 +2563,7 @@ const init = async () => {
     authToken: safeStorageGet(STORAGE_KEYS.authToken, ''),
     authUser: safeStorageGet(STORAGE_KEYS.authUser, '')
   });
+  applyTheme(safeStorageGet(STORAGE_KEYS.theme, ''), { persist: false });
 
   state.periodDays = daysFromSelection();
   bindEvents();

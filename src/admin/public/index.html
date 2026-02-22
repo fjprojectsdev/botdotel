@@ -36,7 +36,7 @@
           <p id="loginError" class="login-error" hidden></p>
 
           <button id="loginCancelBtn" class="btn btn-ghost login-cancel" type="button" hidden>Voltar</button>
-          <button class="btn login-submit" type="submit">Entrar</button>
+          <button class="btn btn-primary login-submit" type="submit">Entrar</button>
           <small class="login-tip">As credenciais ficam salvas no navegador para reconexao automatica.</small>
         </form>
       </div>
@@ -68,23 +68,63 @@
 
       <div class="main-panel">
         <header class="main-header">
-          <div>
+          <div class="header-main">
             <p class="eyebrow">Painel Administrativo</p>
             <h1 id="viewTitle">Relatorios</h1>
             <div id="activeScope" class="scope-chip">Nenhum grupo ativo</div>
             <p id="statusLine" class="status-line">Carregando dados...</p>
+            <div class="header-kpis">
+              <article class="kpi-pill">
+                <span>Total grupos</span>
+                <strong id="topGroups">0</strong>
+              </article>
+              <article class="kpi-pill">
+                <span>Membros ativos</span>
+                <strong id="topMembers">0</strong>
+              </article>
+              <article class="kpi-pill">
+                <span>Volume total</span>
+                <strong id="topVolume">$0</strong>
+              </article>
+              <article class="kpi-pill">
+                <span>Alertas enviados</span>
+                <strong id="topAlerts">0</strong>
+              </article>
+            </div>
           </div>
 
-          <div class="header-actions">
-            <select id="periodSelect" class="period-select" aria-label="Periodo">
-              <option value="1">Ultimas 24h</option>
-              <option value="7">Ultimos 7 dias</option>
-              <option value="30" selected>Ultimos 30 dias</option>
-              <option value="90">Ultimos 90 dias</option>
-            </select>
-            <button id="reloadBtn" class="btn btn-ghost" type="button">Atualizar</button>
-            <button id="testAlertBtn" class="btn btn-soft" type="button">Enviar Teste</button>
-            <button id="exportBtn" class="btn" type="button">Exportar PDF</button>
+          <div class="header-side">
+            <div class="header-filters">
+              <label class="header-filter-label" for="periodSelect">Periodo</label>
+              <select id="periodSelect" class="period-select" aria-label="Periodo">
+                <option value="1">Ultimas 24h</option>
+                <option value="7">Ultimos 7 dias</option>
+                <option value="30" selected>Ultimos 30 dias</option>
+                <option value="90">Ultimos 90 dias</option>
+              </select>
+            </div>
+
+            <div class="header-actions">
+              <button id="reloadBtn" class="btn btn-primary" type="button">Atualizar</button>
+
+              <div class="actions-menu-wrap">
+                <button id="actionsMenuBtn" class="btn btn-ghost" type="button" aria-expanded="false">Acoes</button>
+                <div id="actionsMenu" class="actions-menu" hidden>
+                  <button id="testAlertBtn" class="actions-menu-item" type="button">Enviar Teste</button>
+                  <button id="exportBtn" class="actions-menu-item" type="button">Exportar PDF</button>
+                  <button id="openLoginBtn" class="actions-menu-item" type="button">Reconectar API</button>
+                  <div class="actions-divider"></div>
+                  <label class="theme-label" for="themeSelect">Tema</label>
+                  <select id="themeSelect" class="theme-select">
+                    <option value="">Automatico</option>
+                    <option value="blue">Azul</option>
+                    <option value="purple">Roxo</option>
+                    <option value="green">Verde</option>
+                    <option value="light">Claro</option>
+                  </select>
+                </div>
+              </div>
+            </div>
           </div>
         </header>
 
@@ -276,7 +316,7 @@
                   <span>Decimals</span>
                   <input name="decimals" type="number" min="0" step="1" placeholder="18" required />
                 </label>
-                <button class="btn" type="submit">Adicionar Token</button>
+                <button class="btn btn-primary" type="submit">Adicionar Token</button>
               </form>
 
               <div class="table-wrap">
@@ -334,7 +374,7 @@
                   <span>Filtro minimo (USD)</span>
                   <input id="minUsdInput" name="minUsdAlert" type="number" min="0" step="1" required />
                 </label>
-                <button class="btn" type="submit">Salvar</button>
+                <button class="btn btn-primary" type="submit">Salvar</button>
               </form>
 
               <div id="runtimeMeta" class="runtime-box"></div>
@@ -376,7 +416,7 @@
 
           <div class="modal-actions">
             <button id="groupPermissionsCancelBtn" class="btn btn-ghost" type="button">Cancelar</button>
-            <button class="btn" type="submit">Salvar Permissoes</button>
+            <button class="btn btn-primary" type="submit">Salvar Permissoes</button>
           </div>
         </form>
       </div>
@@ -437,7 +477,7 @@
 
           <div class="modal-actions">
             <button id="scheduleCancelBtn" class="btn btn-ghost" type="button">Cancelar</button>
-            <button class="btn" type="submit">Salvar Agendamento</button>
+            <button class="btn btn-primary" type="submit">Salvar Agendamento</button>
           </div>
         </form>
       </div>
@@ -500,7 +540,7 @@
 
           <div class="modal-actions">
             <button id="menuBuilderCancelBtn" class="btn btn-ghost" type="button">Cancelar</button>
-            <button class="btn" type="submit">Salvar Menu</button>
+            <button class="btn btn-primary" type="submit">Salvar Menu</button>
           </div>
         </form>
       </div>
