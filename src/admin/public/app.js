@@ -316,18 +316,7 @@ const showLoginScreen = (message = '', { allowBack = false } = {}) => {
     return;
   }
 
-  if (refs.previewModal) {
-    refs.previewModal.hidden = true;
-  }
-  if (refs.scheduleModal) {
-    refs.scheduleModal.hidden = true;
-  }
-  if (refs.menuBuilderModal) {
-    refs.menuBuilderModal.hidden = true;
-  }
-  if (refs.tourOverlay) {
-    refs.tourOverlay.hidden = true;
-  }
+  closeAllOverlays();
 
   clearInterval(refreshTimer);
   refreshTimer = null;
@@ -337,6 +326,7 @@ const showLoginScreen = (message = '', { allowBack = false } = {}) => {
 
   refs.loginScreen.hidden = false;
   refs.appFrame.hidden = true;
+  document.body.classList.add('auth-locked');
 
   if (refs.loginCancelBtn) {
     refs.loginCancelBtn.hidden = !allowBack;
@@ -351,6 +341,7 @@ const hideLoginScreen = () => {
   refs.loginScreen.hidden = true;
   refs.appFrame.hidden = false;
   setLoginError('');
+  document.body.classList.remove('auth-locked');
   if (refs.loginCancelBtn) {
     refs.loginCancelBtn.hidden = true;
   }
@@ -359,6 +350,27 @@ const hideLoginScreen = () => {
 const toBasicToken = (username, password) => {
   const raw = `${String(username || '')}:${String(password || '')}`;
   return window.btoa(raw);
+};
+
+const hasActiveSession = () => Boolean(state.apiBase && state.authToken);
+
+const closeAllOverlays = () => {
+  if (refs.previewModal) {
+    refs.previewModal.hidden = true;
+  }
+  if (refs.scheduleModal) {
+    refs.scheduleModal.hidden = true;
+  }
+  if (refs.menuBuilderModal) {
+    refs.menuBuilderModal.hidden = true;
+  }
+  if (refs.tourOverlay) {
+    refs.tourOverlay.hidden = true;
+  }
+
+  document.querySelectorAll('.modal-backdrop, .tour-overlay').forEach((node) => {
+    node.hidden = true;
+  });
 };
 
 const configureApiConnection = async ({ forcePrompt = false } = {}) => {
@@ -699,9 +711,21 @@ const closeModal = (element) => {
 };
 
 const openModal = (element) => {
-  if (element) {
-    element.hidden = false;
+  if (!element) {
+    return false;
   }
+
+  if (!hasActiveSession()) {
+    showLoginScreen('Sessao invalida. Faca login novamente.');
+    return false;
+  }
+
+  if (document.body.classList.contains('auth-locked')) {
+    return false;
+  }
+
+  element.hidden = false;
+  return true;
 };
 
 const applyPeriodFilter = () => {

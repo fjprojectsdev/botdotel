@@ -40,6 +40,21 @@ body {
   overflow: hidden;
 }
 
+body.auth-locked .app-frame {
+  display: none !important;
+}
+
+body.auth-locked .login-screen {
+  display: grid !important;
+  z-index: 420;
+}
+
+body.auth-locked .modal-backdrop,
+body.auth-locked .tour-overlay,
+body.auth-locked .tour-fab {
+  display: none !important;
+}
+
 .orb {
   position: fixed;
   border-radius: 999px;
