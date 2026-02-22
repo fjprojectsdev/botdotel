@@ -8,6 +8,7 @@ const DEFAULT_GROUP_PERMISSIONS = [
   'economy',
   'advanced'
 ];
+const DEFAULT_NEW_GROUP_PERMISSIONS = [];
 
 const FEATURE_PERMISSION = {
   core: 'core_commands',
@@ -178,7 +179,7 @@ class CommandRouter {
       this.tokenModel.upsertGroup({
         chat_id: chatId,
         label: text(chat.title || `Grupo ${chatId}`),
-        permissions: DEFAULT_GROUP_PERMISSIONS,
+        permissions: DEFAULT_NEW_GROUP_PERMISSIONS,
         enabled: 1
       });
       row = this.tokenModel.getGroupByChatId(chatId);

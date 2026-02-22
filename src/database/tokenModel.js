@@ -572,13 +572,6 @@ class TokenModel {
     const tx = this.db.transaction((items) => {
       items.forEach((row) => {
         const normalized = this.normalizeGroupPermissions(row.permissions);
-
-        for (const permission of DEFAULT_GROUP_PERMISSIONS) {
-          if (!normalized.includes(permission)) {
-            normalized.push(permission);
-          }
-        }
-
         updatePermissions.run(JSON.stringify(normalized), Number(row.id));
       });
     });
@@ -1314,14 +1307,13 @@ class TokenModel {
 
   normalizeGroupPermissions(value) {
     if (Array.isArray(value)) {
-      const fromArray = Array.from(
+      return Array.from(
         new Set(
           value
             .map((item) => String(item || '').trim().toLowerCase())
             .filter(Boolean)
         )
       );
-      return fromArray.length ? fromArray : [...DEFAULT_GROUP_PERMISSIONS];
     }
 
     if (typeof value === 'string') {

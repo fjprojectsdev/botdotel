@@ -154,28 +154,10 @@
                 <button class="btn btn-ghost" type="button">Filtrar</button>
               </div>
 
-              <form id="groupForm" class="form-grid form-grid-two">
-                <label>
-                  <span>Grupo (@username ou link t.me)</span>
-                  <input
-                    name="group_ref"
-                    type="text"
-                    placeholder="@imavygrupo ou https://t.me/imavygrupo"
-                    required
-                  />
-                  <small class="field-help">Se for grupo privado, envie <code>/start</code> no grupo para auto-detectar no bot.</small>
-                </label>
-                <label>
-                  <span>Nome Interno</span>
-                  <input name="label" type="text" placeholder="Grupo Principal" required />
-                </label>
-                <label class="field-span-all">
-                  <span>Permissoes</span>
-                  <div id="groupPermissionsSelector" class="permission-selector"></div>
-                  <small class="field-help">Selecione os modulos ativos para este grupo.</small>
-                </label>
-                <button class="btn" type="submit">Adicionar Grupo</button>
-              </form>
+              <div class="runtime-box">
+                Grupos sao descobertos automaticamente quando o bot entra no Telegram.
+                Use o botao <strong>Permissoes</strong> em cada card para autorizar ou negar funcoes do grupo novo.
+              </div>
 
               <div id="groupCards" class="group-card-grid"></div>
             </section>

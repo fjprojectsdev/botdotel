@@ -121,8 +121,6 @@ const refs = {
 
   settingsForm: document.getElementById('settingsForm'),
   minUsdInput: document.getElementById('minUsdInput'),
-  groupForm: document.getElementById('groupForm'),
-  groupPermissionsSelector: document.getElementById('groupPermissionsSelector'),
   tokenForm: document.getElementById('tokenForm'),
   networkSelect: document.getElementById('networkSelect'),
 
@@ -608,36 +606,35 @@ const parseGroupIds = (rawValue) => {
   );
 };
 
-const parseGroupPermissions = (rawValue) => {
+const parseGroupPermissions = (rawValue, { fallbackToDefault = true } = {}) => {
   if (Array.isArray(rawValue)) {
-    const normalized = Array.from(
+    return Array.from(
       new Set(
         rawValue
           .map((item) => String(item || '').trim().toLowerCase())
           .filter(Boolean)
       )
     );
-    return normalized.length ? normalized : [...DEFAULT_GROUP_PERMISSIONS];
   }
 
   if (typeof rawValue === 'string') {
     const trimmed = rawValue.trim();
     if (!trimmed) {
-      return [...DEFAULT_GROUP_PERMISSIONS];
+      return fallbackToDefault ? [...DEFAULT_GROUP_PERMISSIONS] : [];
     }
 
     if (trimmed.startsWith('[')) {
       try {
-        return parseGroupPermissions(JSON.parse(trimmed));
+        return parseGroupPermissions(JSON.parse(trimmed), { fallbackToDefault: false });
       } catch (_error) {
-        return parseGroupPermissions(trimmed.split(','));
+        return parseGroupPermissions(trimmed.split(','), { fallbackToDefault: false });
       }
     }
 
-    return parseGroupPermissions(trimmed.split(','));
+    return parseGroupPermissions(trimmed.split(','), { fallbackToDefault: false });
   }
 
-  return [...DEFAULT_GROUP_PERMISSIONS];
+  return fallbackToDefault ? [...DEFAULT_GROUP_PERMISSIONS] : [];
 };
 
 const renderPermissionSelector = (container, selected = DEFAULT_GROUP_PERMISSIONS, inputName = 'permissions') => {
@@ -1022,6 +1019,10 @@ const renderGroups = () => {
     .map((group) => {
       const enabled = isEnabled(group.enabled);
       const memberHint = Math.max(2, Math.floor((Number(group.id) || 1) * 1.7) % 350);
+      const permissions = parseGroupPermissions(group.permissions, { fallbackToDefault: false });
+      const permissionsHtml = permissions.length
+        ? permissions.map((permission) => `<span class="permission-chip">${escapeHtml(permission)}</span>`).join('')
+        : '<span class="permission-chip permission-chip-off">sem_permissoes</span>';
 
       return `<article class="group-card">
         <div class="group-card-head">
@@ -1038,14 +1039,14 @@ const renderGroups = () => {
           <span>${memberHint} membros</span>
         </div>
         <div class="group-permissions">
-          ${parseGroupPermissions(group.permissions)
-            .map((permission) => `<span class="permission-chip">${escapeHtml(permission)}</span>`)
-            .join('')}
+          ${permissionsHtml}
         </div>
         <div class="group-card-actions">
           <button class="btn btn-small btn-soft" data-action="edit-group-permissions" data-id="${
             group.id
           }" type="button">Permissoes</button>
+          <button class="btn btn-small btn-soft" data-action="group-authorize-all" data-id="${group.id}" type="button">Autorizar tudo</button>
+          <button class="btn btn-small btn-ghost" data-action="group-deny-all" data-id="${group.id}" type="button">Negar tudo</button>
           <button class="btn btn-small btn-soft" data-action="toggle-group" data-id="${group.id}" data-enabled="${
             enabled ? 1 : 0
           }" type="button">${enabled ? 'Pausar' : 'Ativar'}</button>
@@ -1759,33 +1760,6 @@ const nextTourStep = () => {
   renderTourStep();
 };
 
-const handleGroupCreate = async () => {
-  const formData = new FormData(refs.groupForm);
-  const groupRef = String(formData.get('group_ref') || '').trim();
-  const label = String(formData.get('label') || '').trim();
-  const permissions = readPermissionsFromContainer(refs.groupPermissionsSelector, 'group_permission_create');
-
-  if (!groupRef || !label) {
-    showToast('Preencha grupo e nome.', true);
-    return;
-  }
-
-  if (!permissions.length) {
-    showToast('Selecione ao menos uma permissao.', true);
-    return;
-  }
-
-  await apiFetch('/api/groups', {
-    method: 'POST',
-    body: JSON.stringify({ group_ref: groupRef, label, permissions, enabled: true })
-  });
-
-  refs.groupForm.reset();
-  renderPermissionSelector(refs.groupPermissionsSelector, DEFAULT_GROUP_PERMISSIONS, 'group_permission_create');
-  showToast('Grupo salvo com sucesso.');
-  await loadData({ silent: true });
-};
-
 const handleGroupPermissionsSave = async () => {
   const groupId = Number(refs.groupPermissionsGroupIdInput.value || 0);
   const group = state.groups.find((item) => Number(item.id) === groupId);
@@ -1795,10 +1769,6 @@ const handleGroupPermissionsSave = async () => {
   }
 
   const permissions = readPermissionsFromContainer(refs.groupPermissionsChecklist, 'group_permission_edit');
-  if (!permissions.length) {
-    showToast('Selecione ao menos uma permissao.', true);
-    return;
-  }
 
   await apiFetch(`/api/groups/${groupId}`, {
     method: 'PUT',
@@ -2030,13 +2000,6 @@ const bindEvents = () => {
   refs.scheduleSearchInput.addEventListener('input', (event) => {
     state.scheduleSearch = event.target.value || '';
     renderSchedules();
-  });
-
-  refs.groupForm.addEventListener('submit', (event) => {
-    event.preventDefault();
-    withButtonLock(getSubmitButton(event), handleGroupCreate).catch((error) => {
-      showToast(error.message || 'Erro ao salvar grupo.', true);
-    });
   });
 
   refs.groupPermissionsForm.addEventListener('submit', (event) => {
@@ -2294,6 +2257,28 @@ const bindEvents = () => {
         return;
       }
 
+      if (action === 'group-authorize-all') {
+        const id = Number(trigger.dataset.id);
+        await apiFetch(`/api/groups/${id}`, {
+          method: 'PUT',
+          body: JSON.stringify({ permissions: DEFAULT_GROUP_PERMISSIONS })
+        });
+        showToast('Todas as funcoes foram autorizadas para o grupo.');
+        await loadData({ silent: true });
+        return;
+      }
+
+      if (action === 'group-deny-all') {
+        const id = Number(trigger.dataset.id);
+        await apiFetch(`/api/groups/${id}`, {
+          method: 'PUT',
+          body: JSON.stringify({ permissions: [] })
+        });
+        showToast('Todas as funcoes foram negadas para o grupo.');
+        await loadData({ silent: true });
+        return;
+      }
+
       if (action === 'edit-group-permissions') {
         const id = Number(trigger.dataset.id);
         const group = state.groups.find((item) => Number(item.id) === id);
@@ -2437,7 +2422,6 @@ const init = async () => {
 
   state.periodDays = daysFromSelection();
   bindEvents();
-  renderPermissionSelector(refs.groupPermissionsSelector, DEFAULT_GROUP_PERMISSIONS, 'group_permission_create');
   renderView();
 
   const connected = await ensureApiConnectivity({ forcePrompt: false, allowPrompt: false });

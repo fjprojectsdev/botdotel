@@ -98,14 +98,13 @@ const GROUP_LOCK_KEYS = ['antispam', 'antilink', 'antiflood', 'captcha', 'antira
 
 const normalizeGroupPermissions = (value) => {
   if (Array.isArray(value)) {
-    const normalized = Array.from(
+    return Array.from(
       new Set(
         value
           .map((item) => String(item || '').trim().toLowerCase())
           .filter(Boolean)
       )
     );
-    return normalized.length ? normalized : [...DEFAULT_GROUP_PERMISSIONS];
   }
 
   if (typeof value === 'string') {
