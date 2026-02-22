@@ -436,6 +436,21 @@ class TokenModel {
         UNIQUE(token, hash)
       );
 
+      CREATE TABLE IF NOT EXISTS member_activity (
+        chat_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        username TEXT NOT NULL DEFAULT '',
+        first_name TEXT NOT NULL DEFAULT '',
+        last_name TEXT NOT NULL DEFAULT '',
+        message_count INTEGER NOT NULL DEFAULT 0,
+        reactions_count INTEGER NOT NULL DEFAULT 0,
+        volume_usd REAL NOT NULL DEFAULT 0,
+        last_seen TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY(chat_id, user_id)
+      );
+
       CREATE TABLE IF NOT EXISTS groups (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         chat_id TEXT NOT NULL UNIQUE,
@@ -521,6 +536,8 @@ class TokenModel {
       CREATE INDEX IF NOT EXISTS idx_tokens_enabled ON tokens(enabled);
       CREATE INDEX IF NOT EXISTS idx_transactions_hash ON transactions(hash);
       CREATE INDEX IF NOT EXISTS idx_transactions_network_ts ON transactions(network, timestamp);
+      CREATE INDEX IF NOT EXISTS idx_member_activity_seen ON member_activity(last_seen DESC);
+      CREATE INDEX IF NOT EXISTS idx_member_activity_chat ON member_activity(chat_id, last_seen DESC);
       CREATE INDEX IF NOT EXISTS idx_groups_enabled ON groups(enabled);
       CREATE INDEX IF NOT EXISTS idx_warn_chat_user ON moderation_warnings(chat_id, user_id);
       CREATE INDEX IF NOT EXISTS idx_chat_filters_chat ON chat_filters(chat_id, enabled);
@@ -668,6 +685,64 @@ class TokenModel {
       WHERE datetime(timestamp) >= datetime(?)
       GROUP BY buyer
       ORDER BY message_count DESC, volume_usd DESC
+      LIMIT ?
+    `);
+
+    this.statements.upsertMemberActivity = this.db.prepare(`
+      INSERT INTO member_activity (
+        chat_id,
+        user_id,
+        username,
+        first_name,
+        last_name,
+        message_count,
+        reactions_count,
+        volume_usd,
+        last_seen,
+        updated_at
+      )
+      VALUES (
+        @chat_id,
+        @user_id,
+        @username,
+        @first_name,
+        @last_name,
+        1,
+        @reactions_count,
+        @volume_usd,
+        @last_seen,
+        @updated_at
+      )
+      ON CONFLICT(chat_id, user_id)
+      DO UPDATE SET
+        username = excluded.username,
+        first_name = excluded.first_name,
+        last_name = excluded.last_name,
+        message_count = member_activity.message_count + 1,
+        reactions_count = member_activity.reactions_count + excluded.reactions_count,
+        volume_usd = member_activity.volume_usd + excluded.volume_usd,
+        last_seen = excluded.last_seen,
+        updated_at = excluded.updated_at
+    `);
+
+    this.statements.selectTopChatMembersByCutoff = this.db.prepare(`
+      SELECT
+        ma.chat_id,
+        ma.user_id,
+        ma.username,
+        ma.first_name,
+        ma.last_name,
+        ma.message_count,
+        ma.reactions_count,
+        ma.volume_usd,
+        ma.last_seen,
+        COALESCE(g.label, ma.chat_id) AS group_label
+      FROM member_activity ma
+      LEFT JOIN groups g
+        ON g.chat_id = ma.chat_id
+      WHERE datetime(ma.last_seen) >= datetime(?)
+        AND (g.id IS NULL OR g.enabled = 1)
+      ORDER BY ma.message_count DESC, ma.last_seen DESC
       LIMIT ?
     `);
 
@@ -1180,6 +1255,43 @@ class TokenModel {
     const cutoff = new Date(Date.now() - safeDays * 24 * 60 * 60 * 1000).toISOString();
 
     return this.statements.selectTopMembersByCutoff.all(cutoff, safeLimit);
+  }
+
+  trackMemberActivity({
+    chat_id,
+    user_id,
+    username = '',
+    first_name = '',
+    last_name = '',
+    reactions_count = 0,
+    volume_usd = 0,
+    seen_at
+  }) {
+    const payload = {
+      chat_id: String(chat_id || '').trim(),
+      user_id: String(user_id || '').trim(),
+      username: String(username || '').trim(),
+      first_name: String(first_name || '').trim(),
+      last_name: String(last_name || '').trim(),
+      reactions_count: Math.max(0, Number(reactions_count) || 0),
+      volume_usd: Math.max(0, Number(volume_usd) || 0),
+      last_seen: seen_at ? new Date(seen_at).toISOString() : new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+
+    if (!payload.chat_id || !payload.user_id) {
+      return null;
+    }
+
+    this.statements.upsertMemberActivity.run(payload);
+    return payload;
+  }
+
+  getTopActiveMembers({ days = 30, limit = 200 } = {}) {
+    const safeDays = Math.max(1, Math.min(Number(days) || 30, 365));
+    const safeLimit = Math.max(1, Math.min(Number(limit) || 200, 1000));
+    const cutoff = new Date(Date.now() - safeDays * 24 * 60 * 60 * 1000).toISOString();
+    return this.statements.selectTopChatMembersByCutoff.all(cutoff, safeLimit);
   }
 
   normalizeGroupPayload(group) {

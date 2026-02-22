@@ -263,26 +263,99 @@ const groupCommandsForUi = (items) => {
     }));
 };
 
-const normalizeMemberRows = (rows, groups) => {
-  const enabledGroups = groups.filter((group) => group.enabled === 1);
+const normalizeMemberDisplayName = (row) => {
+  const username = String(row.username || '').trim();
+  if (username) {
+    return `@${username}`;
+  }
 
-  return rows.map((row, index) => {
-    const assignedGroup = enabledGroups.length ? enabledGroups[index % enabledGroups.length].label : 'Global';
-    const lastSeenMs = new Date(row.last_seen).getTime();
+  const first = String(row.first_name || '').trim();
+  const last = String(row.last_name || '').trim();
+  const fullName = `${first} ${last}`.trim();
+  if (fullName) {
+    return fullName;
+  }
+
+  return shortWallet(row.user_id || row.member_id || row.wallet || row.buyer || '');
+};
+
+const normalizeMemberRows = (rows) => {
+  return rows.map((row) => {
+    const lastSeen = row.last_seen || row.lastSeen || null;
+    const lastSeenMs = new Date(lastSeen).getTime();
     const active = Number.isFinite(lastSeenMs) ? Date.now() - lastSeenMs < 3 * 24 * 60 * 60 * 1000 : false;
+    const memberId = String(row.user_id || row.member_id || row.wallet || row.buyer || '').trim();
 
     return {
-      member_id: row.buyer,
-      name: shortWallet(row.buyer),
-      wallet: row.buyer,
-      group: assignedGroup,
-      messages: Number(row.message_count || 0),
-      reactions: Number(row.reactions_count || 0),
+      member_id: memberId,
+      name: normalizeMemberDisplayName(row),
+      wallet: memberId,
+      group: String(row.group_label || row.group || 'Global'),
+      messages: Number(row.message_count || row.messages || 0),
+      reactions: Number(row.reactions_count || row.reactions || 0),
       volume_usd: Number(row.volume_usd || 0),
       status: active ? 'Ativo' : 'Inativo',
-      last_seen: row.last_seen
+      last_seen: lastSeen
     };
   });
+};
+
+const loadMembersFromGroupAdmins = async ({ groups, telegramClient, limit, logger }) => {
+  if (!telegramClient || typeof telegramClient.getChatAdministrators !== 'function') {
+    return [];
+  }
+
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 200, 1000));
+  const rows = [];
+  const seen = new Set();
+
+  for (const group of groups) {
+    if (rows.length >= safeLimit) {
+      break;
+    }
+
+    const chatId = String(group.chat_id || '').trim();
+    if (!chatId) {
+      continue;
+    }
+
+    try {
+      const admins = await telegramClient.getChatAdministrators(chatId);
+      for (const item of admins || []) {
+        const user = item?.user;
+        if (!user?.id) {
+          continue;
+        }
+
+        const memberId = String(user.id);
+        const key = `${chatId}:${memberId}`;
+        if (seen.has(key)) {
+          continue;
+        }
+        seen.add(key);
+
+        rows.push({
+          user_id: memberId,
+          username: String(user.username || '').trim(),
+          first_name: String(user.first_name || '').trim(),
+          last_name: String(user.last_name || '').trim(),
+          message_count: 0,
+          reactions_count: 0,
+          volume_usd: 0,
+          last_seen: new Date().toISOString(),
+          group_label: String(group.label || chatId)
+        });
+
+        if (rows.length >= safeLimit) {
+          break;
+        }
+      }
+    } catch (error) {
+      logger.warn({ chatId, err: error.message }, 'failed to fetch group administrators for members list');
+    }
+  }
+
+  return rows;
 };
 
 const scheduleMessageText = (schedule) => {
@@ -553,10 +626,39 @@ const startAdminServer = async ({
     asyncRoute(async (req, res) => {
       const days = parsePositiveInt(req.query.days, 30, 365);
       const limit = parsePositiveInt(req.query.limit, 200, 1000);
-      const rows = tokenModel.getTopMembers({ days, limit });
       const groups = tokenModel.listGroups({ includeDisabled: false });
-      const members = normalizeMemberRows(rows, groups);
-      res.json({ members });
+
+      let source = 'activity';
+      let rows = tokenModel.getTopActiveMembers({ days, limit });
+
+      if (!rows.length) {
+        source = 'transactions';
+        const transactionRows = tokenModel.getTopMembers({ days, limit });
+        rows = transactionRows.map((item) => ({
+          user_id: String(item.buyer || ''),
+          username: '',
+          first_name: '',
+          last_name: '',
+          message_count: Number(item.message_count || 0),
+          reactions_count: Number(item.reactions_count || 0),
+          volume_usd: Number(item.volume_usd || 0),
+          last_seen: item.last_seen,
+          group_label: groups[0]?.label || 'Alertas'
+        }));
+      }
+
+      if (!rows.length) {
+        source = 'telegram_admins';
+        rows = await loadMembersFromGroupAdmins({
+          groups,
+          telegramClient,
+          limit,
+          logger
+        });
+      }
+
+      const members = normalizeMemberRows(rows);
+      res.json({ members, source });
     })
   );
 

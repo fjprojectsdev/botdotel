@@ -179,6 +179,7 @@ body.auth-locked .tour-fab {
   z-index: 1;
   display: grid;
   grid-template-columns: 246px minmax(0, 1fr);
+  height: calc(100vh - 28px);
   min-height: calc(100vh - 28px);
   border-radius: 22px;
   border: 1px solid var(--line);
@@ -190,7 +191,7 @@ body.auth-locked .tour-fab {
 .sidebar {
   display: flex;
   flex-direction: column;
-  min-height: 100%;
+  min-height: 0;
   border-right: 1px solid var(--line);
   background: linear-gradient(180deg, rgba(11, 13, 20, 0.98), rgba(9, 12, 20, 0.98));
 }
@@ -272,6 +273,7 @@ body.auth-locked .tour-fab {
   display: grid;
   grid-template-rows: auto 1fr;
   min-width: 0;
+  min-height: 0;
 }
 
 .main-header {
@@ -405,7 +407,10 @@ textarea:focus,
 }
 
 .views {
-  overflow: auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
   padding: 16px;
 }
 
@@ -1384,6 +1389,7 @@ td {
 
   .app-frame {
     grid-template-columns: 1fr;
+    height: auto;
     min-height: auto;
   }
 

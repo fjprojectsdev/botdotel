@@ -315,6 +315,25 @@ class CommandRouter {
       .replaceAll('{user}', text(payload.user || payload.name || 'membro'));
   }
 
+  recordMemberActivity(message, group) {
+    if (!this.isGroup(message?.chat) || !group || !message?.from) {
+      return;
+    }
+
+    try {
+      this.tokenModel.trackMemberActivity({
+        chat_id: String(message.chat.id),
+        user_id: String(message.from.id),
+        username: text(message.from.username || ''),
+        first_name: text(message.from.first_name || ''),
+        last_name: text(message.from.last_name || ''),
+        seen_at: isoNow()
+      });
+    } catch (error) {
+      this.logger.warn({ err: error.message }, 'failed to track member activity');
+    }
+  }
+
   normalizeMenuConfig(raw) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
       return null;
@@ -456,6 +475,7 @@ class CommandRouter {
     }
 
     const group = await this.ensureGroup(message.chat);
+    this.recordMemberActivity(message, group);
     await this.handleMembershipEvents(message, group);
 
     const body = text(message.text);
