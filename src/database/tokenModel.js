@@ -416,6 +416,7 @@ class TokenModel {
         address TEXT NOT NULL,
         network TEXT NOT NULL,
         pair_address TEXT NOT NULL,
+        buy_media_url TEXT,
         decimals INTEGER NOT NULL,
         enabled INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -585,51 +586,59 @@ class TokenModel {
       this.db.exec(`ALTER TABLE schedules ADD COLUMN media_url TEXT`);
       this.logger.info('database migration applied: schedules.media_url');
     }
+
+    const tokenColumns = this.db.prepare('PRAGMA table_info(tokens)').all();
+    const hasTokenBuyMediaUrl = tokenColumns.some((column) => column.name === 'buy_media_url');
+    if (!hasTokenBuyMediaUrl) {
+      this.db.exec(`ALTER TABLE tokens ADD COLUMN buy_media_url TEXT`);
+      this.logger.info('database migration applied: tokens.buy_media_url');
+    }
   }
 
   prepareStatements() {
     this.statements.upsertToken = this.db.prepare(`
-      INSERT INTO tokens (name, symbol, address, network, pair_address, decimals, enabled, updated_at)
-      VALUES (@name, @symbol, @address, @network, @pair_address, @decimals, @enabled, @updated_at)
+      INSERT INTO tokens (name, symbol, address, network, pair_address, buy_media_url, decimals, enabled, updated_at)
+      VALUES (@name, @symbol, @address, @network, @pair_address, @buy_media_url, @decimals, @enabled, @updated_at)
       ON CONFLICT(address, network)
       DO UPDATE SET
         name = excluded.name,
         symbol = excluded.symbol,
         pair_address = excluded.pair_address,
+        buy_media_url = excluded.buy_media_url,
         decimals = excluded.decimals,
         enabled = excluded.enabled,
         updated_at = excluded.updated_at
     `);
 
     this.statements.selectTokensByNetworkEnabled = this.db.prepare(`
-      SELECT id, name, symbol, address, network, pair_address, decimals, enabled, created_at, updated_at
+      SELECT id, name, symbol, address, network, pair_address, buy_media_url, decimals, enabled, created_at, updated_at
       FROM tokens
       WHERE network = ? AND enabled = 1
       ORDER BY symbol ASC
     `);
 
     this.statements.selectTokensByNetworkAll = this.db.prepare(`
-      SELECT id, name, symbol, address, network, pair_address, decimals, enabled, created_at, updated_at
+      SELECT id, name, symbol, address, network, pair_address, buy_media_url, decimals, enabled, created_at, updated_at
       FROM tokens
       WHERE network = ?
       ORDER BY symbol ASC
     `);
 
     this.statements.selectAllTokensEnabled = this.db.prepare(`
-      SELECT id, name, symbol, address, network, pair_address, decimals, enabled, created_at, updated_at
+      SELECT id, name, symbol, address, network, pair_address, buy_media_url, decimals, enabled, created_at, updated_at
       FROM tokens
       WHERE enabled = 1
       ORDER BY network ASC, symbol ASC
     `);
 
     this.statements.selectAllTokens = this.db.prepare(`
-      SELECT id, name, symbol, address, network, pair_address, decimals, enabled, created_at, updated_at
+      SELECT id, name, symbol, address, network, pair_address, buy_media_url, decimals, enabled, created_at, updated_at
       FROM tokens
       ORDER BY network ASC, symbol ASC
     `);
 
     this.statements.selectTokenById = this.db.prepare(`
-      SELECT id, name, symbol, address, network, pair_address, decimals, enabled, created_at, updated_at
+      SELECT id, name, symbol, address, network, pair_address, buy_media_url, decimals, enabled, created_at, updated_at
       FROM tokens
       WHERE id = ?
       LIMIT 1
@@ -643,6 +652,7 @@ class TokenModel {
         address = @address,
         network = @network,
         pair_address = @pair_address,
+        buy_media_url = @buy_media_url,
         decimals = @decimals,
         enabled = @enabled,
         updated_at = @updated_at
@@ -1146,6 +1156,9 @@ class TokenModel {
       address: this.normalizeAddress(network, token.address),
       network,
       pair_address: this.normalizeAddress(network, token.pair_address),
+      buy_media_url: this.normalizeMediaUrl(token.buy_media_url || token.buyMediaUrl || null, {
+        fieldName: 'token buy_media_url'
+      }),
       decimals: Number(token.decimals),
       enabled: token.enabled === 0 ? 0 : 1,
       updated_at: new Date().toISOString()
@@ -1705,7 +1718,7 @@ class TokenModel {
     );
   }
 
-  normalizeMediaUrl(value, { allowEmpty = true } = {}) {
+  normalizeMediaUrl(value, { allowEmpty = true, fieldName = 'media_url' } = {}) {
     const raw = String(value || '').trim();
     if (!raw) {
       return allowEmpty ? null : '';
@@ -1715,11 +1728,11 @@ class TokenModel {
     try {
       parsed = new URL(raw);
     } catch (_error) {
-      throw new Error('invalid schedule media_url');
+      throw new Error(`invalid ${fieldName}`);
     }
 
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      throw new Error('invalid schedule media_url');
+      throw new Error(`invalid ${fieldName}`);
     }
 
     return parsed.toString();
@@ -1728,7 +1741,9 @@ class TokenModel {
   normalizeSchedulePayload(input) {
     const kind = String(input.kind || 'message').trim().toLowerCase();
     const content = String(input.content || '').trim();
-    const media_url = this.normalizeMediaUrl(input.media_url || input.mediaUrl || null);
+    const media_url = this.normalizeMediaUrl(input.media_url || input.mediaUrl || null, {
+      fieldName: 'schedule media_url'
+    });
     const groupIds = this.parseGroupIds(input.group_ids || input.groupIds);
 
     const rawSendAt = String(input.send_at || input.sendAt || '').trim();

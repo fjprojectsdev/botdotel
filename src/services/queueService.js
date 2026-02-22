@@ -62,7 +62,54 @@ class QueueService {
     }
   }
 
-  getBuyAlertMediaUrl() {
+  normalizeTokenAddress(network, value) {
+    const raw = String(value || '').trim();
+    if (!raw) {
+      return '';
+    }
+
+    return String(network || '').toLowerCase() === 'solana' ? raw : raw.toLowerCase();
+  }
+
+  findTokenByEvent(event) {
+    const network = String(event?.network || '').trim().toLowerCase();
+    if (!network) {
+      return null;
+    }
+
+    const tokens = this.tokenModel.listTokens({ includeDisabled: true, network });
+    if (!Array.isArray(tokens) || !tokens.length) {
+      return null;
+    }
+
+    const normalizedAddress = this.normalizeTokenAddress(network, event?.tokenAddress);
+    if (normalizedAddress) {
+      const byAddress = tokens.find(
+        (item) => this.normalizeTokenAddress(network, item.address) === normalizedAddress
+      );
+      if (byAddress) {
+        return byAddress;
+      }
+    }
+
+    const symbol = String(event?.tokenSymbol || '').trim().toUpperCase();
+    if (symbol) {
+      const bySymbol = tokens.find((item) => String(item.symbol || '').trim().toUpperCase() === symbol);
+      if (bySymbol) {
+        return bySymbol;
+      }
+    }
+
+    return null;
+  }
+
+  getBuyAlertMediaUrl(event = null) {
+    const token = event ? this.findTokenByEvent(event) : null;
+    const tokenMedia = this.normalizeMediaUrl(token?.buy_media_url || token?.buyMediaUrl || '');
+    if (tokenMedia) {
+      return tokenMedia;
+    }
+
     const saved = this.tokenModel.getSetting('media_buy_alert_url');
     return this.normalizeMediaUrl(saved);
   }
@@ -145,7 +192,7 @@ class QueueService {
 
       enriched.whale = this.formatService.classifyWhale(usdValue);
       const message = this.formatService.formatBuyAlert(enriched);
-      const mediaUrl = this.getBuyAlertMediaUrl();
+      const mediaUrl = this.getBuyAlertMediaUrl(enriched);
 
       await this.telegramQueue.add(() =>
         this.telegramClient.sendAlert(message, {

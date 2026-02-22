@@ -128,10 +128,14 @@ const refs = {
 
   settingsForm: document.getElementById('settingsForm'),
   minUsdInput: document.getElementById('minUsdInput'),
-  buyAlertImageUrlInput: document.getElementById('buyAlertImageUrlInput'),
   scheduleImageUrlInput: document.getElementById('scheduleImageUrlInput'),
+  scheduleImageUploadBtn: document.getElementById('scheduleImageUploadBtn'),
+  scheduleImageFileInput: document.getElementById('scheduleImageFileInput'),
   tokenForm: document.getElementById('tokenForm'),
   networkSelect: document.getElementById('networkSelect'),
+  tokenBuyImageUrlInput: document.getElementById('tokenBuyImageUrlInput'),
+  tokenBuyImageUploadBtn: document.getElementById('tokenBuyImageUploadBtn'),
+  tokenBuyImageFileInput: document.getElementById('tokenBuyImageFileInput'),
 
   groupSearchInput: document.getElementById('groupSearchInput'),
   memberSearchInput: document.getElementById('memberSearchInput'),
@@ -172,6 +176,8 @@ const refs = {
   scheduleKindSelect: document.getElementById('scheduleKindSelect'),
   scheduleContentInput: document.getElementById('scheduleContentInput'),
   scheduleMediaUrlInput: document.getElementById('scheduleMediaUrlInput'),
+  scheduleMediaUploadBtn: document.getElementById('scheduleMediaUploadBtn'),
+  scheduleMediaFileInput: document.getElementById('scheduleMediaFileInput'),
   scheduleGroupChecklist: document.getElementById('scheduleGroupChecklist'),
   scheduleSendAtInput: document.getElementById('scheduleSendAtInput'),
   scheduleRecurrenceSelect: document.getElementById('scheduleRecurrenceSelect'),
@@ -210,6 +216,7 @@ let refreshTimer = null;
 let refreshCycleBusy = false;
 let menuDraftButtons = [];
 let tourIndex = -1;
+let pendingTokenImageUploadId = 0;
 
 const TOUR_STEPS = [
   {
@@ -308,6 +315,54 @@ const normalizeOptionalMediaUrl = (value, fieldLabel = 'URL de imagem') => {
   }
 
   return parsed.toString();
+};
+
+const readFileAsDataUrl = (file) =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('Falha ao ler arquivo.'));
+    reader.readAsDataURL(file);
+  });
+
+const validateImageFile = (file, fieldLabel = 'imagem') => {
+  if (!file) {
+    throw new Error(`Selecione uma ${fieldLabel}.`);
+  }
+
+  const mimeType = String(file.type || '').toLowerCase();
+  if (!mimeType.startsWith('image/')) {
+    throw new Error(`Arquivo invalido para ${fieldLabel}.`);
+  }
+
+  const maxBytes = 6 * 1024 * 1024;
+  if (Number(file.size || 0) > maxBytes) {
+    throw new Error(`${fieldLabel} muito grande (max 6MB).`);
+  }
+};
+
+const uploadImageFile = async (file, { scope = 'general', fileName = '' } = {}) => {
+  validateImageFile(file, 'imagem');
+  const dataUrl = await readFileAsDataUrl(file);
+  const payload = await apiFetch('/api/uploads/image', {
+    method: 'POST',
+    body: JSON.stringify({
+      scope,
+      fileName: fileName || file.name || 'image',
+      dataUrl
+    })
+  });
+
+  const url = normalizeOptionalMediaUrl(payload?.file?.url || '', 'URL da imagem enviada');
+  if (!url) {
+    throw new Error('Upload concluido sem URL valida.');
+  }
+
+  return {
+    url,
+    size: Number(payload?.file?.size || file.size || 0),
+    mimeType: String(payload?.file?.mimeType || file.type || '')
+  };
 };
 
 const buildApiUrl = (path) => {
@@ -1077,8 +1132,8 @@ const renderRuntimeMeta = () => {
   const runtime = state.settings?.runtime || {};
   const settings = state.settings?.settings || {};
   const enabledNetworks = runtime.enabledNetworks || [];
-  const buyMedia = String(settings.media_buy_alert_url || '').trim();
   const scheduleMedia = String(settings.media_schedule_url || '').trim();
+  const tokensWithImage = state.tokens.filter((item) => String(item.buy_media_url || '').trim()).length;
 
   refs.runtimeMeta.innerHTML = [
     `<div>API conectada: <strong>${escapeHtml(state.apiBase || '-')}</strong></div>`,
@@ -1089,7 +1144,7 @@ const renderRuntimeMeta = () => {
     `<div>Alertas recentes registrados: <strong>${stats.recentAlerts || 0}</strong></div>`,
     `<div>Agendamentos pendentes: <strong>${stats.schedules?.pending || 0}</strong></div>`,
     `<div>Botoes do menu inicial: <strong>${state.menuConfig?.buttons?.length || 0}</strong></div>`,
-    `<div>Imagem alertas: <strong>${escapeHtml(buyMedia ? shortText(buyMedia, 24, 18) : 'desativada')}</strong></div>`,
+    `<div>Tokens com imagem de compra: <strong>${tokensWithImage}/${state.tokens.length || 0}</strong></div>`,
     `<div>Imagem avisos: <strong>${escapeHtml(scheduleMedia ? shortText(scheduleMedia, 24, 18) : 'desativada')}</strong></div>`
   ].join('');
 };
@@ -1397,13 +1452,14 @@ const renderSchedules = () => {
 
 const renderTokens = () => {
   if (!state.tokens.length) {
-    refs.tokensTbody.innerHTML = '<tr><td colspan="5" class="placeholder">Nenhum token cadastrado.</td></tr>';
+    refs.tokensTbody.innerHTML = '<tr><td colspan="6" class="placeholder">Nenhum token cadastrado.</td></tr>';
     return;
   }
 
   refs.tokensTbody.innerHTML = state.tokens
     .map((token) => {
       const enabled = isEnabled(token.enabled);
+      const buyMedia = String(token.buy_media_url || '').trim();
       return `<tr>
         <td>
           <strong>${escapeHtml(token.symbol)}</strong> ${escapeHtml(token.name)}
@@ -1413,10 +1469,25 @@ const renderTokens = () => {
         <td><span class="badge ${enabled ? 'badge-ok' : 'badge-off'}">${enabled ? 'Ativo' : 'Pausado'}</span></td>
         <td>${escapeHtml(shortText(token.pair_address, 10, 6))}</td>
         <td>
+          ${
+            buyMedia
+              ? `<a class="hash-link" href="${escapeHtml(buyMedia)}" target="_blank" rel="noreferrer">${escapeHtml(
+                  shortText(buyMedia, 18, 14)
+                )}</a>`
+              : '<span class="panel-hint">Sem imagem</span>'
+          }
+        </td>
+        <td>
           <div class="actions">
             <button class="btn btn-small btn-soft" data-action="toggle-token" data-id="${token.id}" data-enabled="${
               enabled ? 1 : 0
             }" type="button">${enabled ? 'Pausar' : 'Ativar'}</button>
+            <button class="btn btn-small btn-soft" data-action="upload-token-image" data-id="${
+              token.id
+            }" type="button">Upload</button>
+            <button class="btn btn-small btn-ghost" data-action="clear-token-image" data-id="${
+              token.id
+            }" type="button">Limpar</button>
             <button class="btn btn-small btn-danger" data-action="delete-token" data-id="${token.id}" type="button">Excluir</button>
           </div>
         </td>
@@ -1460,9 +1531,7 @@ const renderSettings = () => {
   const minUsd = Number(rawMinUsd);
   refs.minUsdInput.value = Number.isFinite(minUsd) ? String(minUsd) : '0';
 
-  const buyAlertImageUrl = String(state.settings?.settings?.media_buy_alert_url || '').trim();
   const scheduleImageUrl = String(state.settings?.settings?.media_schedule_url || '').trim();
-  refs.buyAlertImageUrlInput.value = buyAlertImageUrl;
   refs.scheduleImageUrlInput.value = scheduleImageUrl;
 };
 
@@ -1904,6 +1973,36 @@ const handleGroupPermissionsSave = async () => {
   await loadData({ silent: true });
 };
 
+const buildTokenUpdatePayload = (token, overrides = {}) => {
+  return {
+    name: String(token?.name || '').trim(),
+    symbol: String(token?.symbol || '').trim().toUpperCase(),
+    address: String(token?.address || '').trim(),
+    network: String(token?.network || '').trim().toLowerCase(),
+    pair_address: String(token?.pair_address || '').trim(),
+    decimals: Number(token?.decimals),
+    enabled: isEnabled(token?.enabled),
+    buy_media_url: normalizeOptionalMediaUrl(
+      overrides.buy_media_url !== undefined ? overrides.buy_media_url : token?.buy_media_url || '',
+      'URL de imagem do token'
+    )
+  };
+};
+
+const updateTokenImage = async (tokenId, buyMediaUrl) => {
+  const id = Number(tokenId);
+  const token = state.tokens.find((item) => Number(item.id) === id);
+  if (!token) {
+    throw new Error('Token nao encontrado.');
+  }
+
+  const payload = buildTokenUpdatePayload(token, { buy_media_url: buyMediaUrl });
+  await apiFetch(`/api/tokens/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload)
+  });
+};
+
 const handleTokenCreate = async () => {
   const formData = new FormData(refs.tokenForm);
   const payload = {
@@ -1912,6 +2011,7 @@ const handleTokenCreate = async () => {
     network: String(formData.get('network') || '').trim().toLowerCase(),
     address: String(formData.get('address') || '').trim(),
     pair_address: String(formData.get('pair_address') || '').trim(),
+    buy_media_url: normalizeOptionalMediaUrl(formData.get('buy_media_url') || '', 'URL de imagem do token'),
     decimals: Number(formData.get('decimals'))
   };
 
@@ -1933,6 +2033,12 @@ const handleTokenCreate = async () => {
   });
 
   refs.tokenForm.reset();
+  if (refs.tokenBuyImageUrlInput) {
+    refs.tokenBuyImageUrlInput.value = '';
+  }
+  if (refs.tokenBuyImageFileInput) {
+    refs.tokenBuyImageFileInput.value = '';
+  }
   renderNetworkSelect();
   showToast('Token cadastrado com sucesso.');
   await loadData({ silent: true });
@@ -1945,7 +2051,6 @@ const handleSettingsSave = async () => {
     return;
   }
 
-  const buyAlertImageUrl = normalizeOptionalMediaUrl(refs.buyAlertImageUrlInput.value || '', 'URL de imagem de compra');
   const scheduleImageUrl = normalizeOptionalMediaUrl(
     refs.scheduleImageUrlInput.value || '',
     'URL de imagem de lembretes'
@@ -1955,7 +2060,6 @@ const handleSettingsSave = async () => {
     method: 'PUT',
     body: JSON.stringify({
       minUsdAlert,
-      buyAlertImageUrl,
       scheduleImageUrl
     })
   });
@@ -2125,7 +2229,10 @@ const bindEvents = () => {
     withButtonLock(refs.testAlertBtn, async () => {
       closeActionsMenu();
       const activeGroup = state.groups.find((group) => isEnabled(group.enabled));
-      const mediaUrl = normalizeOptionalMediaUrl(state.settings?.settings?.media_buy_alert_url || '');
+      const tokenWithMedia = state.tokens.find((item) => String(item.buy_media_url || '').trim());
+      const mediaUrl = normalizeOptionalMediaUrl(
+        tokenWithMedia?.buy_media_url || state.settings?.settings?.media_buy_alert_url || ''
+      );
       await apiFetch('/api/test-alert', {
         method: 'POST',
         body: JSON.stringify({
@@ -2177,12 +2284,105 @@ const bindEvents = () => {
     });
   });
 
+  if (refs.tokenBuyImageUploadBtn && refs.tokenBuyImageFileInput) {
+    refs.tokenBuyImageUploadBtn.addEventListener('click', () => {
+      pendingTokenImageUploadId = 0;
+      refs.tokenBuyImageFileInput.value = '';
+      refs.tokenBuyImageFileInput.click();
+    });
+
+    refs.tokenBuyImageFileInput.addEventListener('change', () => {
+      withButtonLock(refs.tokenBuyImageUploadBtn, async () => {
+        const file = refs.tokenBuyImageFileInput.files?.[0];
+        if (!file) {
+          return;
+        }
+
+        const targetTokenId = Number(pendingTokenImageUploadId || 0);
+        const uploaded = await uploadImageFile(file, {
+          scope: 'token-buy',
+          fileName: file.name
+        });
+
+        if (targetTokenId > 0) {
+          await updateTokenImage(targetTokenId, uploaded.url);
+          showToast('Imagem de compra atualizada para o token.');
+          await loadData({ silent: true });
+        } else {
+          refs.tokenBuyImageUrlInput.value = uploaded.url;
+          showToast('Imagem do token enviada. Agora salve o token.');
+        }
+
+        pendingTokenImageUploadId = 0;
+        refs.tokenBuyImageFileInput.value = '';
+      }).catch((error) => {
+        pendingTokenImageUploadId = 0;
+        refs.tokenBuyImageFileInput.value = '';
+        showToast(error.message || 'Falha no upload da imagem do token.', true);
+      });
+    });
+  }
+
   refs.settingsForm.addEventListener('submit', (event) => {
     event.preventDefault();
     withButtonLock(getSubmitButton(event), handleSettingsSave).catch((error) => {
       showToast(error.message || 'Erro ao salvar configuracoes.', true);
     });
   });
+
+  if (refs.scheduleImageUploadBtn && refs.scheduleImageFileInput) {
+    refs.scheduleImageUploadBtn.addEventListener('click', () => {
+      refs.scheduleImageFileInput.value = '';
+      refs.scheduleImageFileInput.click();
+    });
+
+    refs.scheduleImageFileInput.addEventListener('change', () => {
+      withButtonLock(refs.scheduleImageUploadBtn, async () => {
+        const file = refs.scheduleImageFileInput.files?.[0];
+        if (!file) {
+          return;
+        }
+
+        const uploaded = await uploadImageFile(file, {
+          scope: 'schedule-default',
+          fileName: file.name
+        });
+        refs.scheduleImageUrlInput.value = uploaded.url;
+        refs.scheduleImageFileInput.value = '';
+        showToast('Imagem de avisos enviada. Clique em Salvar.');
+      }).catch((error) => {
+        refs.scheduleImageFileInput.value = '';
+        showToast(error.message || 'Falha no upload da imagem de avisos.', true);
+      });
+    });
+  }
+
+  if (refs.scheduleMediaUploadBtn && refs.scheduleMediaFileInput) {
+    refs.scheduleMediaUploadBtn.addEventListener('click', () => {
+      refs.scheduleMediaFileInput.value = '';
+      refs.scheduleMediaFileInput.click();
+    });
+
+    refs.scheduleMediaFileInput.addEventListener('change', () => {
+      withButtonLock(refs.scheduleMediaUploadBtn, async () => {
+        const file = refs.scheduleMediaFileInput.files?.[0];
+        if (!file) {
+          return;
+        }
+
+        const uploaded = await uploadImageFile(file, {
+          scope: 'schedule-item',
+          fileName: file.name
+        });
+        refs.scheduleMediaUrlInput.value = uploaded.url;
+        refs.scheduleMediaFileInput.value = '';
+        showToast('Imagem do agendamento enviada.');
+      }).catch((error) => {
+        refs.scheduleMediaFileInput.value = '';
+        showToast(error.message || 'Falha no upload da imagem do agendamento.', true);
+      });
+    });
+  }
 
   refs.commandsEnableAllBtn.addEventListener('click', () =>
     withButtonLock(refs.commandsEnableAllBtn, async () => {
@@ -2469,6 +2669,26 @@ const bindEvents = () => {
           body: JSON.stringify({ enabled: !enabled })
         });
         showToast(`Token ${enabled ? 'pausado' : 'ativado'}.`);
+        await loadData({ silent: true });
+        return;
+      }
+
+      if (action === 'upload-token-image') {
+        const id = Number(trigger.dataset.id);
+        if (!refs.tokenBuyImageFileInput) {
+          throw new Error('Input de upload indisponivel.');
+        }
+
+        pendingTokenImageUploadId = id;
+        refs.tokenBuyImageFileInput.value = '';
+        refs.tokenBuyImageFileInput.click();
+        return;
+      }
+
+      if (action === 'clear-token-image') {
+        const id = Number(trigger.dataset.id);
+        await updateTokenImage(id, '');
+        showToast('Imagem de compra removida do token.');
         await loadData({ silent: true });
         return;
       }

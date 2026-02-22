@@ -288,7 +288,7 @@
             <section class="panel">
               <div class="panel-head">
                 <h2>Tokens Monitorados</h2>
-                <span class="panel-hint">Cadastro sem restart</span>
+                <span class="panel-hint">Cadastro sem restart + imagem de compra por token</span>
               </div>
 
               <form id="tokenForm" class="form-grid form-grid-three">
@@ -316,6 +316,20 @@
                   <span>Decimals</span>
                   <input name="decimals" type="number" min="0" step="1" placeholder="18" required />
                 </label>
+                <label class="field-span-all">
+                  <span>Imagem de Compra (URL, opcional)</span>
+                  <div class="upload-inline">
+                    <input
+                      id="tokenBuyImageUrlInput"
+                      name="buy_media_url"
+                      type="url"
+                      placeholder="https://cdn.seudominio.com/imagens/token-buy.jpg"
+                    />
+                    <button id="tokenBuyImageUploadBtn" class="btn btn-soft" type="button">Upload</button>
+                  </div>
+                  <small class="field-help">Essa imagem sera usada apenas nos alertas de compra deste token.</small>
+                </label>
+                <input id="tokenBuyImageFileInput" type="file" accept="image/*" hidden />
                 <button class="btn btn-primary" type="submit">Adicionar Token</button>
               </form>
 
@@ -327,6 +341,7 @@
                       <th>Rede</th>
                       <th>Status</th>
                       <th>Pair</th>
+                      <th>Imagem Buy</th>
                       <th>Acoes</th>
                     </tr>
                   </thead>
@@ -375,25 +390,26 @@
                   <input id="minUsdInput" name="minUsdAlert" type="number" min="0" step="1" required />
                 </label>
                 <label class="field-span-all">
-                  <span>Imagem padrao - Alertas de Compra (URL)</span>
-                  <input
-                    id="buyAlertImageUrlInput"
-                    name="buyAlertImageUrl"
-                    type="url"
-                    placeholder="https://cdn.seudominio.com/imagens/compra.jpg"
-                  />
-                  <small class="field-help">Se preenchido, o bot envia foto + texto nos alertas de compra.</small>
+                  <span>Imagem de Compra</span>
+                  <div class="runtime-box compact">
+                    A imagem de compra agora e configurada por token, na aba <strong>Tokens</strong>.
+                    Cada token pode ter sua propria arte.
+                  </div>
                 </label>
                 <label class="field-span-all">
-                  <span>Imagem padrao - Lembretes e Avisos (URL)</span>
-                  <input
-                    id="scheduleImageUrlInput"
-                    name="scheduleImageUrl"
-                    type="url"
-                    placeholder="https://cdn.seudominio.com/imagens/aviso.jpg"
-                  />
+                  <span>Imagem padrao - Lembretes e Avisos</span>
+                  <div class="upload-inline">
+                    <input
+                      id="scheduleImageUrlInput"
+                      name="scheduleImageUrl"
+                      type="url"
+                      placeholder="https://cdn.seudominio.com/imagens/aviso.jpg"
+                    />
+                    <button id="scheduleImageUploadBtn" class="btn btn-soft" type="button">Upload</button>
+                  </div>
                   <small class="field-help">Usada em agendamentos quando nao houver imagem especifica no item.</small>
                 </label>
+                <input id="scheduleImageFileInput" type="file" accept="image/*" hidden />
                 <button class="btn btn-primary" type="submit">Salvar</button>
               </form>
 
@@ -477,14 +493,18 @@
 
           <label>
             <span>Imagem (URL, opcional)</span>
-            <input
-              id="scheduleMediaUrlInput"
-              name="media_url"
-              type="url"
-              placeholder="https://cdn.seudominio.com/imagens/lembrete.jpg"
-            />
+            <div class="upload-inline">
+              <input
+                id="scheduleMediaUrlInput"
+                name="media_url"
+                type="url"
+                placeholder="https://cdn.seudominio.com/imagens/lembrete.jpg"
+              />
+              <button id="scheduleMediaUploadBtn" class="btn btn-soft" type="button">Upload</button>
+            </div>
             <small class="field-help">Se vazio, usa a imagem padrao configurada em Configuracoes.</small>
           </label>
+          <input id="scheduleMediaFileInput" type="file" accept="image/*" hidden />
 
           <div>
             <span class="group-picker-title">Grupos de destino</span>

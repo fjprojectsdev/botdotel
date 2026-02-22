@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const { NETWORKS } = require('../config/networks');
@@ -84,6 +85,63 @@ const normalizeMediaUrl = (value, fieldName = 'media url') => {
   }
 
   return parsed.toString();
+};
+
+const sanitizeUploadName = (value) => {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-_]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60);
+  return normalized || 'image';
+};
+
+const parseImageDataUrl = (value) => {
+  const raw = String(value || '').trim();
+  const match = raw.match(/^data:(image\/(?:png|jpe?g|webp|gif));base64,([A-Za-z0-9+/=\s]+)$/i);
+  if (!match) {
+    throw new Error('invalid image payload');
+  }
+
+  const mimeType = String(match[1] || '').toLowerCase();
+  const base64Payload = String(match[2] || '').replace(/\s+/g, '');
+  const data = Buffer.from(base64Payload, 'base64');
+  if (!data.length) {
+    throw new Error('empty image payload');
+  }
+
+  return { mimeType, data };
+};
+
+const extensionByMimeType = (mimeType) => {
+  const map = {
+    'image/jpeg': 'jpg',
+    'image/jpg': 'jpg',
+    'image/png': 'png',
+    'image/webp': 'webp',
+    'image/gif': 'gif'
+  };
+  return map[String(mimeType || '').toLowerCase()] || '';
+};
+
+const resolvePublicBaseUrl = (req) => {
+  const rawForwardedProto = req.headers['x-forwarded-proto'];
+  const rawForwardedHost = req.headers['x-forwarded-host'];
+  const proto = String(
+    (Array.isArray(rawForwardedProto) ? rawForwardedProto[0] : rawForwardedProto) || req.protocol || 'http'
+  )
+    .split(',')[0]
+    .trim();
+  const host = String((Array.isArray(rawForwardedHost) ? rawForwardedHost[0] : rawForwardedHost) || req.get('host') || '')
+    .split(',')[0]
+    .trim();
+
+  if (!host) {
+    return '';
+  }
+
+  return `${proto}://${host}`;
 };
 
 const normalizeOrigin = (value) => String(value || '').trim().replace(/\/+$/, '');
@@ -326,6 +384,7 @@ const buildTokenPayload = (body) => {
     address: normalizeTokenAddress(network, body.address),
     network,
     pair_address: normalizeTokenAddress(network, body.pair_address || body.pairAddress || body.pair),
+    buy_media_url: normalizeMediaUrl(body.buy_media_url || body.buyMediaUrl || '', 'token buy image url'),
     decimals: Number(body.decimals),
     enabled: toEnabledFlag(body.enabled, true)
   };
@@ -536,9 +595,12 @@ const startAdminServer = async ({
   });
   const corsOrigins = parseCorsOrigins(process.env.CORS_ORIGINS || '');
   const corsAllowAll = corsOrigins.includes('*');
+  const uploadsDir = path.join(__dirname, 'public', 'uploads');
+  const maxUploadBytes = Math.max(128 * 1024, Number(process.env.ADMIN_UPLOAD_MAX_BYTES || 6 * 1024 * 1024) || 0);
+  fs.mkdirSync(uploadsDir, { recursive: true });
 
   app.disable('x-powered-by');
-  app.use(express.json({ limit: '2mb' }));
+  app.use(express.json({ limit: '15mb' }));
   app.use((req, res, next) => {
     const requestOrigin = normalizeOrigin(req.headers.origin || '');
     const hasOrigin = Boolean(requestOrigin);
@@ -567,8 +629,10 @@ const startAdminServer = async ({
     res.json({ ok: true, service: 'buy-alert-admin' });
   });
 
+  app.use('/uploads', express.static(uploadsDir, { maxAge: '30d', etag: true, index: false }));
+
   app.use((req, res, next) => {
-    if (req.path === '/healthz') {
+    if (req.path === '/healthz' || req.path.startsWith('/uploads/')) {
       return next();
     }
     return authMiddleware(req, res, next);
@@ -634,6 +698,40 @@ const startAdminServer = async ({
       const network = req.query.network ? String(req.query.network).toLowerCase() : undefined;
       const tokens = tokenModel.listTokens({ includeDisabled, network });
       res.json({ tokens });
+    })
+  );
+
+  app.post(
+    '/api/uploads/image',
+    asyncRoute(async (req, res) => {
+      const scope = sanitizeUploadName(req.body?.scope || 'general');
+      const inputName = sanitizeUploadName(req.body?.fileName || req.body?.filename || 'image');
+      const { mimeType, data } = parseImageDataUrl(req.body?.dataUrl || req.body?.data_url || '');
+      const extension = extensionByMimeType(mimeType);
+      if (!extension) {
+        return res.status(400).json({ error: 'unsupported image type' });
+      }
+
+      if (data.length > maxUploadBytes) {
+        return res.status(413).json({ error: `image too large (max ${maxUploadBytes} bytes)` });
+      }
+
+      const fileName = `${scope}-${inputName}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.${extension}`;
+      const fullPath = path.join(uploadsDir, fileName);
+      fs.writeFileSync(fullPath, data);
+
+      const relativePath = `/uploads/${encodeURIComponent(fileName)}`;
+      const baseUrl = resolvePublicBaseUrl(req);
+      const url = baseUrl ? `${baseUrl}${relativePath}` : relativePath;
+
+      return res.status(201).json({
+        file: {
+          url,
+          path: relativePath,
+          mimeType,
+          size: data.length
+        }
+      });
     })
   );
 
