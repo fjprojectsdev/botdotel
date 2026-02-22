@@ -1,0 +1,486 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Buy Alerts | Painel Administrativo</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="orb orb-a"></div>
+    <div class="orb orb-b"></div>
+
+    <div class="app-frame">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">9BOT</div>
+          <p class="brand-sub">Dashboard Premium</p>
+        </div>
+
+        <nav class="side-nav">
+          <button class="side-link active" type="button" data-nav-view="overview">Relatorios</button>
+          <button class="side-link" type="button" data-nav-view="groups">Grupos</button>
+          <button class="side-link" type="button" data-nav-view="members">Membros</button>
+          <button class="side-link" type="button" data-nav-view="commands">Comandos</button>
+          <button class="side-link" type="button" data-nav-view="schedules">Agendamentos</button>
+          <button class="side-link" type="button" data-nav-view="tokens">Tokens</button>
+          <button class="side-link" type="button" data-nav-view="activity">Atividade</button>
+          <button class="side-link" type="button" data-nav-view="settings">Configuracoes</button>
+        </nav>
+
+        <div class="sidebar-footer">
+          <p>Bot de Alertas Multi-chain</p>
+          <small>Telegram + EVM + Solana</small>
+        </div>
+      </aside>
+
+      <div class="main-panel">
+        <header class="main-header">
+          <div>
+            <p class="eyebrow">Painel Administrativo</p>
+            <h1 id="viewTitle">Relatorios</h1>
+            <div id="activeScope" class="scope-chip">Nenhum grupo ativo</div>
+            <p id="statusLine" class="status-line">Carregando dados...</p>
+          </div>
+
+          <div class="header-actions">
+            <select id="periodSelect" class="period-select" aria-label="Periodo">
+              <option value="1">Ultimas 24h</option>
+              <option value="7">Ultimos 7 dias</option>
+              <option value="30" selected>Ultimos 30 dias</option>
+              <option value="90">Ultimos 90 dias</option>
+            </select>
+            <button id="connectApiBtn" class="btn btn-ghost" type="button">Conectar API</button>
+            <button id="reloadBtn" class="btn btn-ghost" type="button">Atualizar</button>
+            <button id="testAlertBtn" class="btn btn-soft" type="button">Enviar Teste</button>
+            <button id="exportBtn" class="btn" type="button">Exportar PDF</button>
+          </div>
+        </header>
+
+        <main class="views">
+          <section class="view active" data-view="overview">
+            <div class="stats-grid">
+              <article class="metric-card">
+                <p class="metric-label">Compras no periodo</p>
+                <h3 id="statBuys">0</h3>
+              </article>
+              <article class="metric-card">
+                <p class="metric-label">Volume no periodo</p>
+                <h3 id="statVolume">$0</h3>
+              </article>
+              <article class="metric-card">
+                <p class="metric-label">Tokens ativos</p>
+                <h3 id="statTokens">0</h3>
+              </article>
+              <article class="metric-card">
+                <p class="metric-label">Grupos ativos</p>
+                <h3 id="statGroups">0</h3>
+              </article>
+              <article class="metric-card metric-card-wide">
+                <p class="metric-label">Minimo USD</p>
+                <h3 id="statMinUsd">$0</h3>
+                <small id="statQueue">Fila process: 0 | telegram: 0</small>
+              </article>
+            </div>
+
+            <div class="overview-grid">
+              <section class="panel">
+                <div class="panel-head">
+                  <h2>Tendencias de Tokens</h2>
+                  <span class="panel-hint">Mais citados nas compras</span>
+                </div>
+                <div id="tokenCloud" class="chip-cloud"></div>
+              </section>
+
+              <section class="panel">
+                <div class="panel-head">
+                  <h2>Distribuicao por Rede</h2>
+                  <span class="panel-hint">Participacao no periodo</span>
+                </div>
+                <div id="networkBreakdown" class="bar-list"></div>
+              </section>
+
+              <section class="panel panel-wide">
+                <div class="panel-head">
+                  <h2>Compras com Maior Impacto</h2>
+                  <span class="panel-hint">Ordenado por valor USD</span>
+                </div>
+                <div id="whaleList" class="whale-list"></div>
+              </section>
+            </div>
+          </section>
+
+          <section class="view" data-view="groups">
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Grupos Telegram</h2>
+                <span class="panel-hint">Destino dos alertas</span>
+              </div>
+
+              <div class="filter-row">
+                <input id="groupSearchInput" type="text" placeholder="Buscar grupos..." />
+                <button class="btn btn-ghost" type="button">Filtrar</button>
+              </div>
+
+              <form id="groupForm" class="form-grid form-grid-two">
+                <label>
+                  <span>Chat ID</span>
+                  <input name="chat_id" type="text" placeholder="-1001234567890" required />
+                </label>
+                <label>
+                  <span>Nome Interno</span>
+                  <input name="label" type="text" placeholder="Grupo Principal" required />
+                </label>
+                <label class="field-span-all">
+                  <span>Permissoes (CSV)</span>
+                  <input name="permissions" type="text" placeholder="buy_alerts,schedules" />
+                  <small class="field-help">Use virgula para separar. Exemplo: <code>buy_alerts,schedules</code></small>
+                </label>
+                <button class="btn" type="submit">Adicionar Grupo</button>
+              </form>
+
+              <div id="groupCards" class="group-card-grid"></div>
+            </section>
+          </section>
+
+          <section class="view" data-view="members">
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Membros Ativos</h2>
+                <span class="panel-hint">Ranking por interacao no periodo</span>
+              </div>
+
+              <div class="filter-row">
+                <input id="memberSearchInput" type="text" placeholder="Buscar membro ou wallet..." />
+                <button class="btn btn-ghost" type="button">Filtrar</button>
+              </div>
+
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Membro</th>
+                      <th>Grupo</th>
+                      <th>Mensagens</th>
+                      <th>Reacoes</th>
+                      <th>Volume</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody id="membersTbody"></tbody>
+                </table>
+              </div>
+            </section>
+          </section>
+
+          <section class="view" data-view="commands">
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Gerenciar Comandos</h2>
+                <span class="panel-hint">Ative/desative por categoria ou comando</span>
+              </div>
+
+              <div class="filter-row filter-row-wide">
+                <input id="commandSearchInput" type="text" placeholder="Buscar comandos..." />
+                <div class="filter-actions">
+                  <button id="openMenuBuilderBtn" class="btn" type="button">Configurar Menu</button>
+                  <button id="commandsEnableAllBtn" class="btn btn-soft" type="button">Ativar todos</button>
+                  <button id="commandsDisableAllBtn" class="btn btn-ghost" type="button">Desativar todos</button>
+                </div>
+              </div>
+
+              <div id="commandsAccordion" class="accordion"></div>
+            </section>
+          </section>
+
+          <section class="view" data-view="schedules">
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Agendamentos</h2>
+                <span class="panel-hint">Envios automaticos por data/hora</span>
+              </div>
+
+              <div class="filter-row filter-row-wide">
+                <input id="scheduleSearchInput" type="text" placeholder="Buscar agendamentos..." />
+                <div class="filter-actions">
+                  <button id="openScheduleModalBtn" class="btn" type="button">Nova Mensagem</button>
+                </div>
+              </div>
+
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Mensagem</th>
+                      <th>Tipo</th>
+                      <th>Data/Hora</th>
+                      <th>Recorrencia</th>
+                      <th>Status</th>
+                      <th>Acoes</th>
+                    </tr>
+                  </thead>
+                  <tbody id="schedulesTbody"></tbody>
+                </table>
+              </div>
+            </section>
+          </section>
+
+          <section class="view" data-view="tokens">
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Tokens Monitorados</h2>
+                <span class="panel-hint">Cadastro sem restart</span>
+              </div>
+
+              <form id="tokenForm" class="form-grid form-grid-three">
+                <label>
+                  <span>Nome</span>
+                  <input name="name" type="text" placeholder="Nix" required />
+                </label>
+                <label>
+                  <span>Simbolo</span>
+                  <input name="symbol" type="text" placeholder="NIX" required />
+                </label>
+                <label>
+                  <span>Rede</span>
+                  <select id="networkSelect" name="network" required></select>
+                </label>
+                <label>
+                  <span>Token Address</span>
+                  <input name="address" type="text" placeholder="0x..." required />
+                </label>
+                <label>
+                  <span>Pair Address</span>
+                  <input name="pair_address" type="text" placeholder="0x... ou mint Solana" required />
+                </label>
+                <label>
+                  <span>Decimals</span>
+                  <input name="decimals" type="number" min="0" step="1" placeholder="18" required />
+                </label>
+                <button class="btn" type="submit">Adicionar Token</button>
+              </form>
+
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Token</th>
+                      <th>Rede</th>
+                      <th>Status</th>
+                      <th>Pair</th>
+                      <th>Acoes</th>
+                    </tr>
+                  </thead>
+                  <tbody id="tokensTbody"></tbody>
+                </table>
+              </div>
+            </section>
+          </section>
+
+          <section class="view" data-view="activity">
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Compras Recentes</h2>
+                <span class="panel-hint">Historico registrado no banco</span>
+              </div>
+
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Horario</th>
+                      <th>Token</th>
+                      <th>Rede</th>
+                      <th>Buyer</th>
+                      <th>Amount</th>
+                      <th>USD</th>
+                      <th>Tx</th>
+                    </tr>
+                  </thead>
+                  <tbody id="txTbody"></tbody>
+                </table>
+              </div>
+            </section>
+          </section>
+
+          <section class="view" data-view="settings">
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Regras de Alerta</h2>
+                <span class="panel-hint">Ajustes em tempo real</span>
+              </div>
+
+              <form id="settingsForm" class="form-grid form-grid-inline">
+                <label>
+                  <span>Filtro minimo (USD)</span>
+                  <input id="minUsdInput" name="minUsdAlert" type="number" min="0" step="1" required />
+                </label>
+                <button class="btn" type="submit">Salvar</button>
+              </form>
+
+              <div id="runtimeMeta" class="runtime-box"></div>
+            </section>
+          </section>
+        </main>
+      </div>
+    </div>
+
+    <div id="previewModal" class="modal-backdrop" hidden>
+      <div class="modal-card">
+        <div class="modal-head">
+          <h3>Preview do Comando</h3>
+          <button id="previewCloseBtn" class="modal-close" type="button">X</button>
+        </div>
+        <div class="modal-body">
+          <p id="previewCommandName" class="preview-title">-</p>
+          <p id="previewCommandDescription" class="preview-desc">-</p>
+          <div class="preview-meta">
+            <span id="previewCommandKey">-</span>
+            <span id="previewCommandAliases">-</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="scheduleModal" class="modal-backdrop" hidden>
+      <div class="modal-card modal-card-lg">
+        <div class="modal-head">
+          <h3>Agendar Mensagem</h3>
+          <button id="scheduleCloseBtn" class="modal-close" type="button">X</button>
+        </div>
+
+        <form id="scheduleForm" class="modal-form">
+          <input id="scheduleIdInput" type="hidden" name="id" />
+
+          <div class="form-grid form-grid-two">
+            <label>
+              <span>Tipo</span>
+              <select id="scheduleKindSelect" name="kind" required>
+                <option value="message">Mensagem</option>
+                <option value="poll">Enquete</option>
+              </select>
+            </label>
+
+            <label>
+              <span>Recorrencia</span>
+              <select id="scheduleRecurrenceSelect" name="recurrence" required>
+                <option value="none">Unico</option>
+                <option value="daily">Diario</option>
+              </select>
+            </label>
+          </div>
+
+          <label>
+            <span>Mensagem</span>
+            <textarea id="scheduleContentInput" name="content" rows="4" placeholder="Digite sua mensagem..." required></textarea>
+          </label>
+
+          <div>
+            <span class="group-picker-title">Grupos de destino</span>
+            <div id="scheduleGroupChecklist" class="group-checklist"></div>
+          </div>
+
+          <div class="form-grid form-grid-two">
+            <label>
+              <span>Data/Hora</span>
+              <input id="scheduleSendAtInput" name="send_at" type="datetime-local" required />
+            </label>
+
+            <label>
+              <span>Status inicial</span>
+              <select id="scheduleStatusSelect" name="status" required>
+                <option value="pending">Pendente</option>
+                <option value="disabled">Desativado</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="modal-actions">
+            <button id="scheduleCancelBtn" class="btn btn-ghost" type="button">Cancelar</button>
+            <button class="btn" type="submit">Salvar Agendamento</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div id="menuBuilderModal" class="modal-backdrop" hidden>
+      <div class="modal-card modal-card-xl">
+        <div class="modal-head">
+          <h3>Configurar Menu Inicial</h3>
+          <button id="menuBuilderCloseBtn" class="modal-close" type="button">X</button>
+        </div>
+
+        <form id="menuBuilderForm" class="modal-form">
+          <div class="menu-builder-layout">
+            <section class="menu-builder-editor">
+              <label>
+                <span>Saudacao</span>
+                <textarea
+                  id="menuGreetingInput"
+                  rows="3"
+                  placeholder="( * ) Ola, @(pushName)!&#10;Bem-vindo ao menu do grupo."
+                  required
+                ></textarea>
+              </label>
+
+              <label>
+                <span>URL do Site</span>
+                <input id="menuUrlInput" type="text" placeholder="9bot.com.br" />
+              </label>
+
+              <label>
+                <span>Descricao</span>
+                <textarea
+                  id="menuDescriptionInput"
+                  rows="3"
+                  placeholder="Escolha uma categoria abaixo para receber noticias e analises."
+                  required
+                ></textarea>
+              </label>
+
+              <div class="menu-buttons-head">
+                <span>Botoes do Menu</span>
+                <button id="menuAddButtonBtn" class="btn btn-small" type="button">Adicionar</button>
+              </div>
+              <div id="menuButtonsList" class="menu-buttons-list"></div>
+            </section>
+
+            <aside class="menu-preview">
+              <p class="menu-preview-title">Preview no WhatsApp</p>
+              <div class="menu-preview-phone">
+                <div class="menu-preview-chat">
+                  <p id="menuPreviewGreeting" class="menu-preview-greeting">-</p>
+                  <p id="menuPreviewUrl" class="menu-preview-url">-</p>
+                  <p id="menuPreviewDescription" class="menu-preview-description">-</p>
+                  <div id="menuPreviewButtons" class="menu-preview-buttons"></div>
+                </div>
+              </div>
+            </aside>
+          </div>
+
+          <div class="modal-actions">
+            <button id="menuBuilderCancelBtn" class="btn btn-ghost" type="button">Cancelar</button>
+            <button class="btn" type="submit">Salvar Menu</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <button id="tourStartBtn" class="tour-fab" type="button" aria-label="Iniciar tutorial">?</button>
+    <div id="tourOverlay" class="tour-overlay" hidden>
+      <div id="tourSpotlight" class="tour-spotlight"></div>
+      <div id="tourCursor" class="tour-cursor"></div>
+      <div id="tourTooltip" class="tour-tooltip">
+        <p id="tourStepText">-</p>
+        <div class="tour-actions">
+          <button id="tourSkipBtn" class="btn btn-ghost btn-small" type="button">Fechar</button>
+          <button id="tourNextBtn" class="btn btn-small" type="button">Proximo</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="toast" class="toast" aria-live="polite"></div>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>
