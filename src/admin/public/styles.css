@@ -40,6 +40,10 @@ body {
   overflow: hidden;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 body.auth-locked .app-frame {
   display: none !important;
 }
