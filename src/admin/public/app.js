@@ -100,7 +100,6 @@ const refs = {
   statusLine: document.getElementById('statusLine'),
   viewTitle: document.getElementById('viewTitle'),
   activeScope: document.getElementById('activeScope'),
-  connectApiBtn: document.getElementById('connectApiBtn'),
   reloadBtn: document.getElementById('reloadBtn'),
   testAlertBtn: document.getElementById('testAlertBtn'),
   exportBtn: document.getElementById('exportBtn'),
@@ -197,6 +196,7 @@ const refs = {
 
 let loadInFlight = null;
 let refreshTimer = null;
+let refreshCycleBusy = false;
 let menuDraftButtons = [];
 let tourIndex = -1;
 
@@ -1359,7 +1359,7 @@ const isLikelyVercelHost = () => {
   return host.endsWith('.vercel.app');
 };
 
-const ensureApiConnectivity = async ({ forcePrompt = false, allowPrompt = true } = {}) => {
+const ensureApiConnectivity = async ({ forcePrompt = false, allowPrompt = true, silent = false } = {}) => {
   const missingAuth = !state.apiBase || !state.authToken;
   const shouldPrompt = allowPrompt && (forcePrompt || missingAuth);
 
@@ -1377,7 +1377,9 @@ const ensureApiConnectivity = async ({ forcePrompt = false, allowPrompt = true }
       throw new Error('API sem resposta');
     }
   } catch (error) {
-    showToast(`Falha ao acessar API (${error.message}).`, true);
+    if (!silent) {
+      showToast(`Falha ao acessar API (${error.message}).`, true);
+    }
     return false;
   }
 
@@ -1386,11 +1388,15 @@ const ensureApiConnectivity = async ({ forcePrompt = false, allowPrompt = true }
     return true;
   } catch (error) {
     if (error?.status === 401) {
-      showToast('Credenciais invalidas. Reconfigure a conexao.', true);
+      if (!silent) {
+        showToast('Credenciais invalidas. Reconfigure a conexao.', true);
+      }
       return false;
     }
 
-    showToast(`Falha ao autenticar na API (${error.message}).`, true);
+    if (!silent) {
+      showToast(`Falha ao autenticar na API (${error.message}).`, true);
+    }
     return false;
   }
 };
@@ -1413,7 +1419,7 @@ const renderAll = () => {
   renderSettings();
 };
 
-const loadData = async ({ silent = false } = {}) => {
+const loadData = async ({ silent = false, suppressErrors = false } = {}) => {
   if (loadInFlight) {
     return loadInFlight;
   }
@@ -1466,10 +1472,15 @@ const loadData = async ({ silent = false } = {}) => {
       console.error(error);
       refs.statusLine.textContent = `Falha ao atualizar (${new Date().toLocaleTimeString('pt-BR')}) [API: ${state.apiBase}]`;
       if (error?.status === 401) {
-        showToast('Nao autorizado. Clique em "Conectar API" para atualizar credenciais.', true);
+        if (!suppressErrors) {
+          showToast('Nao autorizado. Faca login novamente para atualizar credenciais.', true);
+        }
         showLoginScreen('Sessao expirada ou credenciais invalidas. Faca login novamente.');
+        return;
       }
-      showToast(`Erro ao carregar dados: ${error.message}`, true);
+      if (!suppressErrors) {
+        showToast(`Erro ao carregar dados: ${error.message}`, true);
+      }
     } finally {
       loadInFlight = null;
     }
@@ -1916,13 +1927,6 @@ const handleLoginSubmit = async () => {
 };
 
 const bindEvents = () => {
-  if (refs.connectApiBtn) {
-    refs.connectApiBtn.addEventListener('click', () => {
-      showLoginScreen('Atualize as credenciais para reconectar a API.', { allowBack: true });
-      refs.loginApiUrlInput?.focus();
-    });
-  }
-
   if (refs.loginForm) {
     refs.loginForm.addEventListener('submit', (event) => {
       event.preventDefault();
@@ -2404,13 +2408,49 @@ const bindEvents = () => {
       renderTourStep();
     }
   });
+
+  window.addEventListener('online', () => {
+    runAutoSyncCycle({ initial: false });
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+      runAutoSyncCycle({ initial: false });
+    }
+  });
 };
 
 const startAutoRefresh = () => {
   clearInterval(refreshTimer);
   refreshTimer = setInterval(() => {
-    loadData({ silent: true });
+    runAutoSyncCycle({ initial: false });
   }, 20000);
+};
+
+const runAutoSyncCycle = async ({ initial = false } = {}) => {
+  if (refreshCycleBusy || document.body.classList.contains('auth-locked')) {
+    return;
+  }
+
+  refreshCycleBusy = true;
+  try {
+    const connected = await ensureApiConnectivity({ forcePrompt: false, allowPrompt: false, silent: true });
+    if (!connected) {
+      refs.statusLine.textContent = `API offline (${new Date().toLocaleTimeString(
+        'pt-BR'
+      )}). Reconectando automaticamente...`;
+      return;
+    }
+
+    hideLoginScreen();
+    if (initial) {
+      refs.statusLine.textContent = `Conectado em ${state.apiBase}. Carregando dados...`;
+    }
+
+    await loadData({ silent: !initial, suppressErrors: true });
+  } finally {
+    refreshCycleBusy = false;
+  }
 };
 
 const init = async () => {
@@ -2424,9 +2464,7 @@ const init = async () => {
   bindEvents();
   renderView();
 
-  const connected = await ensureApiConnectivity({ forcePrompt: false, allowPrompt: false });
-
-  if (!connected) {
+  if (!hasActiveSession()) {
     refs.statusLine.textContent = 'Login necessario para acessar o dashboard.';
     showLoginScreen('Conecte sua API para iniciar o painel.');
     refs.loginApiUrlInput?.focus();
@@ -2434,8 +2472,7 @@ const init = async () => {
   }
 
   hideLoginScreen();
-  refs.statusLine.textContent = `Conectado em ${state.apiBase}. Carregando dados...`;
-  await loadData();
+  await runAutoSyncCycle({ initial: true });
   startAutoRefresh();
 };
 
