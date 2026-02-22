@@ -253,12 +253,18 @@ const normalizeApiBase = (value) => {
 const buildApiUrl = (path) => {
   const raw = String(path || '').trim();
   if (!raw) {
-    return state.apiBase || window.location.origin;
+    if (!state.apiBase) {
+      throw new Error('API nao configurada. Faca login novamente.');
+    }
+    return state.apiBase;
   }
   if (/^https?:\/\//i.test(raw)) {
     return raw;
   }
-  const base = normalizeApiBase(state.apiBase || window.location.origin);
+  const base = normalizeApiBase(state.apiBase || '');
+  if (!base) {
+    throw new Error('API nao configurada. Faca login novamente.');
+  }
   const suffix = raw.startsWith('/') ? raw : `/${raw}`;
   return `${base}${suffix}`;
 };
