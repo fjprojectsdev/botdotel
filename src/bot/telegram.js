@@ -197,6 +197,13 @@ class TelegramClient {
     return this.me;
   }
 
+  async getChat(chatIdOrUsername) {
+    if (!this.bot) {
+      return null;
+    }
+    return this.bot.getChat(chatIdOrUsername);
+  }
+
   async getChatMember(chatId, userId) {
     if (!this.bot) {
       return null;

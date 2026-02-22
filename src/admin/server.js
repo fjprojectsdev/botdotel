@@ -128,6 +128,110 @@ const normalizeGroupPermissions = (value) => {
   return [...DEFAULT_GROUP_PERMISSIONS];
 };
 
+const parseTelegramGroupReference = (value) => {
+  const raw = String(value || '').trim();
+  if (!raw) {
+    return { kind: 'empty', raw };
+  }
+
+  if (/^-?\d+$/.test(raw)) {
+    return { kind: 'chat_id', chatId: raw, raw };
+  }
+
+  const parseUsername = (source) => {
+    const username = String(source || '').replace(/^@/, '').trim();
+    if (!/^[A-Za-z0-9_]{5,}$/.test(username)) {
+      return null;
+    }
+    return `@${username}`;
+  };
+
+  if (raw.startsWith('@')) {
+    const username = parseUsername(raw);
+    return username ? { kind: 'username', username, raw } : { kind: 'invalid', raw };
+  }
+
+  if (/^[A-Za-z0-9_]{5,}$/.test(raw)) {
+    return { kind: 'username', username: `@${raw}`, raw };
+  }
+
+  if (raw.includes('t.me/') || raw.includes('telegram.me/')) {
+    let parsedUrl = null;
+    try {
+      parsedUrl = new URL(raw.startsWith('http') ? raw : `https://${raw}`);
+    } catch (_error) {
+      return { kind: 'invalid', raw };
+    }
+
+    const host = String(parsedUrl.hostname || '')
+      .trim()
+      .toLowerCase()
+      .replace(/^www\./, '');
+    if (host !== 't.me' && host !== 'telegram.me') {
+      return { kind: 'invalid', raw };
+    }
+
+    const segments = parsedUrl.pathname
+      .split('/')
+      .map((item) => item.trim())
+      .filter(Boolean);
+
+    if (!segments.length) {
+      return { kind: 'invalid', raw };
+    }
+
+    const [first, second] = segments;
+    if (first === 'joinchat' || first.startsWith('+')) {
+      return { kind: 'private_invite', raw };
+    }
+
+    if (first === 'c' && /^\d+$/.test(second || '')) {
+      const normalized = String(second).startsWith('100') ? `-${second}` : `-100${second}`;
+      return { kind: 'chat_id', chatId: normalized, raw };
+    }
+
+    const username = parseUsername(first);
+    return username ? { kind: 'username', username, raw } : { kind: 'invalid', raw };
+  }
+
+  return { kind: 'invalid', raw };
+};
+
+const resolveGroupChatId = async (identifier, telegramClient) => {
+  const parsed = parseTelegramGroupReference(identifier);
+
+  if (parsed.kind === 'empty') {
+    throw new Error('group reference is required');
+  }
+
+  if (parsed.kind === 'chat_id') {
+    return parsed.chatId;
+  }
+
+  if (parsed.kind === 'private_invite') {
+    throw new Error('invalid private invite link; use @username, t.me/c/... or numeric chat id');
+  }
+
+  if (parsed.kind === 'username') {
+    if (!telegramClient || typeof telegramClient.getChat !== 'function') {
+      throw new Error('invalid group reference; telegram resolver unavailable');
+    }
+
+    try {
+      const chat = await telegramClient.getChat(parsed.username);
+      const chatId = String(chat?.id || '').trim();
+      if (!chatId) {
+        throw new Error('invalid group reference; could not resolve chat id');
+      }
+      return chatId;
+    } catch (_error) {
+      throw new Error('invalid group reference; check username/link and bot access');
+    }
+  }
+
+  throw new Error('invalid group reference; use @username, t.me link or numeric id');
+};
+
 const shortWallet = (value) => {
   const raw = String(value || '');
   if (raw.length <= 12) {
@@ -210,7 +314,7 @@ const buildTokenPayload = (body) => {
 
 const buildGroupPayload = (body) => {
   return {
-    chat_id: String(body.chat_id || body.chatId || '').trim(),
+    chat_id: String(body.chat_id || body.chatId || body.group_ref || body.groupRef || '').trim(),
     label: String(body.label || '').trim() || 'Telegram Group',
     permissions: normalizeGroupPermissions(body.permissions || body.permission || body.permissionsCsv),
     enabled: toEnabledFlag(body.enabled, true)
@@ -599,6 +703,7 @@ const startAdminServer = async ({
     '/api/groups',
     asyncRoute(async (req, res) => {
       const payload = buildGroupPayload(req.body || {});
+      payload.chat_id = await resolveGroupChatId(payload.chat_id, telegramClient);
       tokenModel.upsertGroup(payload);
 
       const current = tokenModel
@@ -619,6 +724,7 @@ const startAdminServer = async ({
       }
 
       const payload = buildGroupPayload({ ...existing, ...(req.body || {}) });
+      payload.chat_id = await resolveGroupChatId(payload.chat_id, telegramClient);
       tokenModel.updateGroupById(id, payload);
       return res.json({ group: tokenModel.getGroupById(id) });
     })

@@ -156,17 +156,23 @@
 
               <form id="groupForm" class="form-grid form-grid-two">
                 <label>
-                  <span>Chat ID</span>
-                  <input name="chat_id" type="text" placeholder="-1001234567890" required />
+                  <span>Grupo (@username ou link t.me)</span>
+                  <input
+                    name="group_ref"
+                    type="text"
+                    placeholder="@imavygrupo ou https://t.me/imavygrupo"
+                    required
+                  />
+                  <small class="field-help">Se for grupo privado, envie <code>/start</code> no grupo para auto-detectar no bot.</small>
                 </label>
                 <label>
                   <span>Nome Interno</span>
                   <input name="label" type="text" placeholder="Grupo Principal" required />
                 </label>
                 <label class="field-span-all">
-                  <span>Permissoes (CSV)</span>
-                  <input name="permissions" type="text" placeholder="buy_alerts,schedules" />
-                  <small class="field-help">Use virgula para separar. Exemplo: <code>buy_alerts,schedules</code></small>
+                  <span>Permissoes</span>
+                  <div id="groupPermissionsSelector" class="permission-selector"></div>
+                  <small class="field-help">Selecione os modulos ativos para este grupo.</small>
                 </label>
                 <button class="btn" type="submit">Adicionar Grupo</button>
               </form>
@@ -371,6 +377,27 @@
             <span id="previewCommandAliases">-</span>
           </div>
         </div>
+      </div>
+    </div>
+
+    <div id="groupPermissionsModal" class="modal-backdrop" hidden>
+      <div class="modal-card modal-card-lg">
+        <div class="modal-head">
+          <h3>Permissoes do Grupo</h3>
+          <button id="groupPermissionsCloseBtn" class="modal-close" type="button">X</button>
+        </div>
+
+        <form id="groupPermissionsForm" class="modal-form">
+          <input id="groupPermissionsGroupIdInput" type="hidden" name="group_id" />
+          <p id="groupPermissionsGroupLabel" class="panel-hint">-</p>
+
+          <div id="groupPermissionsChecklist" class="permission-selector"></div>
+
+          <div class="modal-actions">
+            <button id="groupPermissionsCancelBtn" class="btn btn-ghost" type="button">Cancelar</button>
+            <button class="btn" type="submit">Salvar Permissoes</button>
+          </div>
+        </form>
       </div>
     </div>
 

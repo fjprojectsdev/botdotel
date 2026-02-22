@@ -633,6 +633,40 @@ textarea:focus,
   font-size: 11px;
 }
 
+.permission-selector {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.permission-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: rgba(16, 34, 64, 0.62);
+  color: #d8e9ff;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  user-select: none;
+}
+
+.permission-check:hover {
+  border-color: rgba(64, 193, 255, 0.46);
+}
+
+.permission-check input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+  padding: 0;
+}
+
 .table-wrap {
   margin-top: 12px;
   border: 1px solid var(--line);

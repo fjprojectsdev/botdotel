@@ -54,6 +54,17 @@ const DEFAULT_GROUP_PERMISSIONS = [
   'advanced'
 ];
 
+const GROUP_PERMISSION_OPTIONS = [
+  { key: 'buy_alerts', label: 'Buy Alerts' },
+  { key: 'core_commands', label: 'Comandos Base' },
+  { key: 'moderation', label: 'Moderacao' },
+  { key: 'security', label: 'Seguranca' },
+  { key: 'welcome', label: 'Boas-vindas' },
+  { key: 'fun', label: 'Diversao' },
+  { key: 'economy', label: 'Economia' },
+  { key: 'advanced', label: 'Avancado' }
+];
+
 const SECURITY_LOCK_BY_COMMAND = {
   'security.antispam': 'antispam',
   'security.antilink': 'antilink',
@@ -111,6 +122,7 @@ const refs = {
   settingsForm: document.getElementById('settingsForm'),
   minUsdInput: document.getElementById('minUsdInput'),
   groupForm: document.getElementById('groupForm'),
+  groupPermissionsSelector: document.getElementById('groupPermissionsSelector'),
   tokenForm: document.getElementById('tokenForm'),
   networkSelect: document.getElementById('networkSelect'),
 
@@ -137,6 +149,14 @@ const refs = {
   previewCommandDescription: document.getElementById('previewCommandDescription'),
   previewCommandKey: document.getElementById('previewCommandKey'),
   previewCommandAliases: document.getElementById('previewCommandAliases'),
+
+  groupPermissionsModal: document.getElementById('groupPermissionsModal'),
+  groupPermissionsForm: document.getElementById('groupPermissionsForm'),
+  groupPermissionsGroupIdInput: document.getElementById('groupPermissionsGroupIdInput'),
+  groupPermissionsGroupLabel: document.getElementById('groupPermissionsGroupLabel'),
+  groupPermissionsChecklist: document.getElementById('groupPermissionsChecklist'),
+  groupPermissionsCloseBtn: document.getElementById('groupPermissionsCloseBtn'),
+  groupPermissionsCancelBtn: document.getElementById('groupPermissionsCancelBtn'),
 
   scheduleModal: document.getElementById('scheduleModal'),
   scheduleModalTitle: document.querySelector('#scheduleModal .modal-head h3'),
@@ -618,6 +638,31 @@ const parseGroupPermissions = (rawValue) => {
   }
 
   return [...DEFAULT_GROUP_PERMISSIONS];
+};
+
+const renderPermissionSelector = (container, selected = DEFAULT_GROUP_PERMISSIONS, inputName = 'permissions') => {
+  if (!container) {
+    return;
+  }
+
+  const selectedSet = new Set(parseGroupPermissions(selected));
+  container.innerHTML = GROUP_PERMISSION_OPTIONS.map((option) => {
+    const checked = selectedSet.has(option.key) ? 'checked' : '';
+    return `<label class="permission-check">
+      <input type="checkbox" name="${escapeHtml(inputName)}" value="${escapeHtml(option.key)}" ${checked} />
+      <span>${escapeHtml(option.label)}</span>
+    </label>`;
+  }).join('');
+};
+
+const readPermissionsFromContainer = (container, inputName) => {
+  if (!container) {
+    return [];
+  }
+
+  return Array.from(container.querySelectorAll(`input[name="${inputName}"]:checked`))
+    .map((element) => String(element.value || '').trim().toLowerCase())
+    .filter(Boolean);
 };
 
 const normalizeGroup = (group) => {
@@ -1449,6 +1494,25 @@ const closePreviewModal = () => {
   closeModal(refs.previewModal);
 };
 
+const openGroupPermissionsModal = (group) => {
+  if (!group) {
+    showToast('Grupo nao encontrado.', true);
+    return;
+  }
+
+  refs.groupPermissionsGroupIdInput.value = String(group.id || '');
+  refs.groupPermissionsGroupLabel.textContent = `${group.label || '-'} (${shortText(group.chat_id, 8, 5)})`;
+  renderPermissionSelector(refs.groupPermissionsChecklist, group.permissions, 'group_permission_edit');
+  openModal(refs.groupPermissionsModal);
+};
+
+const closeGroupPermissionsModal = () => {
+  closeModal(refs.groupPermissionsModal);
+  refs.groupPermissionsForm.reset();
+  refs.groupPermissionsGroupIdInput.value = '';
+  refs.groupPermissionsGroupLabel.textContent = '-';
+};
+
 const openScheduleModal = (schedule = null) => {
   const editing = Boolean(schedule);
   refs.scheduleModalTitle.textContent = editing ? 'Editar Agendamento' : 'Agendar Mensagem';
@@ -1593,6 +1657,7 @@ const closeTour = () => {
   refs.tourOverlay.hidden = true;
   tourIndex = -1;
   closePreviewModal();
+  closeGroupPermissionsModal();
   closeMenuBuilderModal();
   closeScheduleModal();
 };
@@ -1645,6 +1710,9 @@ const renderTourStep = () => {
   if (step.selector !== '#previewModal' && !refs.previewModal.hidden) {
     closePreviewModal();
   }
+  if (step.selector !== '#groupPermissionsModal' && !refs.groupPermissionsModal.hidden) {
+    closeGroupPermissionsModal();
+  }
   if (step.selector !== '#menuBuilderModal' && !refs.menuBuilderModal.hidden) {
     closeMenuBuilderModal();
   }
@@ -1693,22 +1761,52 @@ const nextTourStep = () => {
 
 const handleGroupCreate = async () => {
   const formData = new FormData(refs.groupForm);
-  const chatId = String(formData.get('chat_id') || '').trim();
+  const groupRef = String(formData.get('group_ref') || '').trim();
   const label = String(formData.get('label') || '').trim();
-  const permissions = parseGroupPermissions(String(formData.get('permissions') || '').trim());
+  const permissions = readPermissionsFromContainer(refs.groupPermissionsSelector, 'group_permission_create');
 
-  if (!chatId || !label) {
-    showToast('Preencha chat id e nome.', true);
+  if (!groupRef || !label) {
+    showToast('Preencha grupo e nome.', true);
+    return;
+  }
+
+  if (!permissions.length) {
+    showToast('Selecione ao menos uma permissao.', true);
     return;
   }
 
   await apiFetch('/api/groups', {
     method: 'POST',
-    body: JSON.stringify({ chat_id: chatId, label, permissions, enabled: true })
+    body: JSON.stringify({ group_ref: groupRef, label, permissions, enabled: true })
   });
 
   refs.groupForm.reset();
+  renderPermissionSelector(refs.groupPermissionsSelector, DEFAULT_GROUP_PERMISSIONS, 'group_permission_create');
   showToast('Grupo salvo com sucesso.');
+  await loadData({ silent: true });
+};
+
+const handleGroupPermissionsSave = async () => {
+  const groupId = Number(refs.groupPermissionsGroupIdInput.value || 0);
+  const group = state.groups.find((item) => Number(item.id) === groupId);
+  if (!group) {
+    showToast('Grupo nao encontrado.', true);
+    return;
+  }
+
+  const permissions = readPermissionsFromContainer(refs.groupPermissionsChecklist, 'group_permission_edit');
+  if (!permissions.length) {
+    showToast('Selecione ao menos uma permissao.', true);
+    return;
+  }
+
+  await apiFetch(`/api/groups/${groupId}`, {
+    method: 'PUT',
+    body: JSON.stringify({ permissions })
+  });
+
+  closeGroupPermissionsModal();
+  showToast('Permissoes atualizadas.');
   await loadData({ silent: true });
 };
 
@@ -1941,6 +2039,13 @@ const bindEvents = () => {
     });
   });
 
+  refs.groupPermissionsForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    withButtonLock(getSubmitButton(event), handleGroupPermissionsSave).catch((error) => {
+      showToast(error.message || 'Erro ao salvar permissoes.', true);
+    });
+  });
+
   refs.tokenForm.addEventListener('submit', (event) => {
     event.preventDefault();
     withButtonLock(getSubmitButton(event), handleTokenCreate).catch((error) => {
@@ -2056,6 +2161,8 @@ const bindEvents = () => {
   });
 
   refs.previewCloseBtn.addEventListener('click', closePreviewModal);
+  refs.groupPermissionsCloseBtn.addEventListener('click', closeGroupPermissionsModal);
+  refs.groupPermissionsCancelBtn.addEventListener('click', closeGroupPermissionsModal);
   refs.scheduleCloseBtn.addEventListener('click', closeScheduleModal);
   refs.scheduleCancelBtn.addEventListener('click', closeScheduleModal);
   refs.menuBuilderCloseBtn.addEventListener('click', closeMenuBuilderModal);
@@ -2074,6 +2181,12 @@ const bindEvents = () => {
   refs.previewModal.addEventListener('click', (event) => {
     if (event.target === refs.previewModal) {
       closePreviewModal();
+    }
+  });
+
+  refs.groupPermissionsModal.addEventListener('click', (event) => {
+    if (event.target === refs.groupPermissionsModal) {
+      closeGroupPermissionsModal();
     }
   });
 
@@ -2108,6 +2221,9 @@ const bindEvents = () => {
     }
     if (!refs.previewModal.hidden) {
       closePreviewModal();
+    }
+    if (!refs.groupPermissionsModal.hidden) {
+      closeGroupPermissionsModal();
     }
     if (!refs.tourOverlay.hidden) {
       closeTour();
@@ -2181,24 +2297,7 @@ const bindEvents = () => {
       if (action === 'edit-group-permissions') {
         const id = Number(trigger.dataset.id);
         const group = state.groups.find((item) => Number(item.id) === id);
-        if (!group) {
-          showToast('Grupo nao encontrado.', true);
-          return;
-        }
-
-        const current = parseGroupPermissions(group.permissions).join(',');
-        const input = window.prompt('Permissoes separadas por virgula (ex: buy_alerts,schedules)', current);
-        if (input === null) {
-          return;
-        }
-
-        const permissions = parseGroupPermissions(input);
-        await apiFetch(`/api/groups/${id}`, {
-          method: 'PUT',
-          body: JSON.stringify({ ...group, permissions })
-        });
-        showToast('Permissoes atualizadas.');
-        await loadData({ silent: true });
+        openGroupPermissionsModal(group);
         return;
       }
 
@@ -2338,6 +2437,7 @@ const init = async () => {
 
   state.periodDays = daysFromSelection();
   bindEvents();
+  renderPermissionSelector(refs.groupPermissionsSelector, DEFAULT_GROUP_PERMISSIONS, 'group_permission_create');
   renderView();
 
   const connected = await ensureApiConnectivity({ forcePrompt: false, allowPrompt: false });
