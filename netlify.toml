@@ -1,0 +1,6 @@
+[build]
+  publish = "src/admin/public"
+
+[build.environment]
+  NODE_VERSION = "20"
+

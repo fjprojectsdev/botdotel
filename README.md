@@ -94,6 +94,16 @@ pm2 restart buy-alert-bot-all --update-env
 
 8. Dentro do painel, o botão **Conectar API** reabre a tela de login para trocar credenciais.
 
+## Frontend no Netlify (somente UI)
+
+1. Crie um novo site no Netlify conectando este repositório.
+2. O arquivo `netlify.toml` já define o publish directory em `src/admin/public`.
+3. Faça deploy.
+4. Abra o site e faça login no painel com:
+   - URL da API da VPS (HTTPS)
+   - `ADMIN_USER`
+   - `ADMIN_PASSWORD`
+
 ## PM2
 
 ```bash
