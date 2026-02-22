@@ -753,14 +753,25 @@ class CommandRouter {
   async handleSettings(ctx) {
     const locks = this.tokenModel.getGroupLocks(ctx.chatId);
     const permissions = Array.isArray(ctx.group?.permissions) ? ctx.group.permissions.join(', ') : 'nenhuma';
+    const securityCommands = this.tokenModel
+      .listCommands()
+      .filter((item) =>
+        ['security.antispam', 'security.antilink', 'security.antiflood', 'security.captcha', 'security.antiraid'].includes(
+          item.command_key
+        )
+      )
+      .map((item) => `${String(item.command_key || '').split('.').pop()}=${item.enabled === 1 ? 'on' : 'off'}`)
+      .join(', ');
+
     await this.reply(
       ctx,
       [
-        '⚙️ Configuracoes',
-        `• Min USD alerta: ${this.queueService.getMinUsdAlert()}`,
-        `• Permissoes: ${permissions}`,
-        `• Locks: antispam=${locks.antispam ? 'on' : 'off'}, antilink=${locks.antilink ? 'on' : 'off'}, antiflood=${locks.antiflood ? 'on' : 'off'}, captcha=${locks.captcha ? 'on' : 'off'}, antiraid=${locks.antiraid ? 'on' : 'off'}`,
-        `• Redes ativas: ${this.enabledNetworks.join(', ')}`
+        'Configuracoes',
+        `* Min USD alerta: ${this.queueService.getMinUsdAlert()}`,
+        `* Permissoes: ${permissions}`,
+        `* Comandos seguranca: ${securityCommands || 'n/d'}`,
+        `* Locks: antispam=${locks.antispam ? 'on' : 'off'}, antilink=${locks.antilink ? 'on' : 'off'}, antiflood=${locks.antiflood ? 'on' : 'off'}, captcha=${locks.captcha ? 'on' : 'off'}, antiraid=${locks.antiraid ? 'on' : 'off'}`,
+        `* Redes ativas: ${this.enabledNetworks.join(', ')}`
       ].join('\n')
     );
   }

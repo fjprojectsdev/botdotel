@@ -54,6 +54,16 @@ const DEFAULT_GROUP_PERMISSIONS = [
   'advanced'
 ];
 
+const SECURITY_LOCK_BY_COMMAND = {
+  'security.antispam': 'antispam',
+  'security.antilink': 'antilink',
+  'security.antiflood': 'antiflood',
+  'security.captcha': 'captcha',
+  'security.antiraid': 'antiraid'
+};
+
+const SECURITY_LOCK_KEYS = ['antispam', 'antilink', 'antiflood', 'captcha', 'antiraid'];
+
 const DEFAULT_MENU_CONFIG = {
   greeting: '( * ) Ola, @(pushName)!\\nBem-vindo ao menu da sua comunidade.',
   siteUrl: '9bot.com.br',
@@ -680,6 +690,42 @@ const getNetworkLabel = (key) => {
 const getGroupLabelById = (chatId) => {
   const found = state.groups.find((item) => String(item.chat_id) === String(chatId));
   return found ? found.label : shortText(chatId, 8, 5);
+};
+
+const getPrimaryActiveGroup = () => state.groups.find((group) => isEnabled(group.enabled)) || null;
+
+const syncGroupLockByCommand = async (commandKey, enabled) => {
+  const lockKey = SECURITY_LOCK_BY_COMMAND[String(commandKey || '')];
+  if (!lockKey) {
+    return;
+  }
+
+  const activeGroup = getPrimaryActiveGroup();
+  if (!activeGroup) {
+    return;
+  }
+
+  await apiFetch(`/api/groups/${activeGroup.id}/locks`, {
+    method: 'PATCH',
+    body: JSON.stringify({ lockKey, enabled: Boolean(enabled) })
+  });
+};
+
+const syncSecurityLocksBulk = async (enabled) => {
+  const activeGroup = getPrimaryActiveGroup();
+  if (!activeGroup) {
+    return;
+  }
+
+  const locks = {};
+  SECURITY_LOCK_KEYS.forEach((key) => {
+    locks[key] = Boolean(enabled);
+  });
+
+  await apiFetch(`/api/groups/${activeGroup.id}/locks`, {
+    method: 'PATCH',
+    body: JSON.stringify({ locks })
+  });
 };
 
 const getCommandById = (id) => {
@@ -1915,6 +1961,7 @@ const bindEvents = () => {
         method: 'PATCH',
         body: JSON.stringify({ enabled: true })
       });
+      await syncSecurityLocksBulk(true);
       showToast('Todos os comandos foram ativados.');
       await loadData({ silent: true });
     }).catch((error) => {
@@ -1928,6 +1975,7 @@ const bindEvents = () => {
         method: 'PATCH',
         body: JSON.stringify({ enabled: false })
       });
+      await syncSecurityLocksBulk(false);
       showToast('Todos os comandos foram desativados.');
       await loadData({ silent: true });
     }).catch((error) => {
@@ -2191,10 +2239,14 @@ const bindEvents = () => {
       if (action === 'command-toggle') {
         const id = Number(trigger.dataset.id);
         const enabled = trigger.dataset.enabled === '1';
+        const command = getCommandById(id);
         await apiFetch(`/api/commands/${id}/enabled`, {
           method: 'PATCH',
           body: JSON.stringify({ enabled: !enabled })
         });
+        if (command?.key) {
+          await syncGroupLockByCommand(command.key, !enabled);
+        }
         showToast(`Comando ${enabled ? 'desativado' : 'ativado'}.`);
         await loadData({ silent: true });
         return;
@@ -2207,6 +2259,9 @@ const bindEvents = () => {
           method: 'PATCH',
           body: JSON.stringify({ enabled: shouldEnable })
         });
+        if (String(category).toLowerCase() === 'seguranca') {
+          await syncSecurityLocksBulk(shouldEnable);
+        }
         showToast(`Categoria ${shouldEnable ? 'ativada' : 'desativada'}.`);
         await loadData({ silent: true });
         return;

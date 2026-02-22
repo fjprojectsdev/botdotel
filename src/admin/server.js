@@ -94,6 +94,7 @@ const DEFAULT_GROUP_PERMISSIONS = [
   'economy',
   'advanced'
 ];
+const GROUP_LOCK_KEYS = ['antispam', 'antilink', 'antiflood', 'captcha', 'antiraid'];
 
 const normalizeGroupPermissions = (value) => {
   if (Array.isArray(value)) {
@@ -225,6 +226,36 @@ const buildSchedulePayload = (body) => {
     recurrence: String(body.recurrence || 'none').trim().toLowerCase(),
     status: body.status ? String(body.status).trim().toLowerCase() : undefined
   };
+};
+
+const normalizeLocksPatch = (body = {}) => {
+  const patch = {};
+
+  if (body.lockKey) {
+    const key = String(body.lockKey || '').trim().toLowerCase();
+    if (!GROUP_LOCK_KEYS.includes(key)) {
+      throw new Error('invalid lockKey');
+    }
+    patch[key] = asBoolean(body.enabled, true);
+    return patch;
+  }
+
+  const source =
+    body.locks && typeof body.locks === 'object' && !Array.isArray(body.locks)
+      ? body.locks
+      : body;
+
+  for (const key of GROUP_LOCK_KEYS) {
+    if (source[key] !== undefined) {
+      patch[key] = asBoolean(source[key], false);
+    }
+  }
+
+  if (!Object.keys(patch).length) {
+    throw new Error('no lock values provided');
+  }
+
+  return patch;
 };
 
 const groupCommandsForUi = (items) => {
@@ -618,6 +649,55 @@ const startAdminServer = async ({
       }
 
       return res.status(204).send();
+    })
+  );
+
+  app.get(
+    '/api/groups/:id/locks',
+    asyncRoute(async (req, res) => {
+      const id = Number(req.params.id);
+      const group = tokenModel.getGroupById(id);
+      if (!group) {
+        return res.status(404).json({ error: 'group not found' });
+      }
+
+      const locks = tokenModel.getGroupLocks(group.chat_id);
+      return res.json({
+        group: {
+          id: group.id,
+          chat_id: group.chat_id,
+          label: group.label
+        },
+        locks
+      });
+    })
+  );
+
+  app.patch(
+    '/api/groups/:id/locks',
+    asyncRoute(async (req, res) => {
+      const id = Number(req.params.id);
+      const group = tokenModel.getGroupById(id);
+      if (!group) {
+        return res.status(404).json({ error: 'group not found' });
+      }
+
+      let patch = null;
+      try {
+        patch = normalizeLocksPatch(req.body || {});
+      } catch (error) {
+        return res.status(400).json({ error: error.message });
+      }
+
+      const locks = tokenModel.setGroupLocksBulk(group.chat_id, patch);
+      return res.json({
+        group: {
+          id: group.id,
+          chat_id: group.chat_id,
+          label: group.label
+        },
+        locks
+      });
     })
   );
 
