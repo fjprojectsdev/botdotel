@@ -92,6 +92,8 @@ const MEME_LINKS = [
 
 const BALL_8 = ['Com certeza.', 'Sem duvidas.', 'Sinais dizem que sim.', 'Melhor nao.', 'Pergunte mais tarde.', 'Nao.'];
 const COIN = ['cara', 'coroa'];
+const MENU_BUTTON_LIMIT = 10;
+const MENU_FALLBACK_TEXT = 'Menu rapido: /start /help /settings /alerts /tokens /ping';
 
 const text = (value) => String(value || '').trim();
 const isoNow = () => new Date().toISOString();
@@ -313,6 +315,108 @@ class CommandRouter {
       .replaceAll('{user}', text(payload.user || payload.name || 'membro'));
   }
 
+  normalizeMenuConfig(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return null;
+    }
+
+    const buttons = (Array.isArray(raw.buttons) ? raw.buttons : [])
+      .map((button) => ({
+        emoji: text(button?.emoji).slice(0, 4),
+        label: text(button?.label).slice(0, 64),
+        command: text(button?.command).slice(0, 120)
+      }))
+      .filter((button) => button.label && button.command)
+      .slice(0, MENU_BUTTON_LIMIT);
+
+    return {
+      greeting: text(raw.greeting),
+      siteUrl: text(raw.siteUrl),
+      description: text(raw.description),
+      buttons
+    };
+  }
+
+  loadMenuConfig() {
+    const serialized = this.tokenModel.getSetting('menu_config');
+    if (!serialized) {
+      return null;
+    }
+
+    try {
+      return this.normalizeMenuConfig(JSON.parse(serialized));
+    } catch (error) {
+      this.logger.warn({ err: error.message }, 'invalid menu_config json');
+      return null;
+    }
+  }
+
+  resolveMenuText(rawValue, ctx) {
+    const value = text(rawValue);
+    if (!value) {
+      return '';
+    }
+
+    const firstName = text(ctx?.message?.from?.first_name || ctx?.message?.from?.username || 'Usuario');
+    const username = ctx?.message?.from?.username ? `@${ctx.message.from.username}` : firstName;
+    const groupName = text(ctx?.message?.chat?.title || 'grupo');
+
+    return value
+      .replaceAll('@(pushName)', firstName)
+      .replaceAll('{name}', firstName)
+      .replaceAll('{user}', username)
+      .replaceAll('{group}', groupName)
+      .trim();
+  }
+
+  buildMenuMessage(ctx, config) {
+    if (!config) {
+      return MENU_FALLBACK_TEXT;
+    }
+
+    const lines = [];
+    const greeting = this.resolveMenuText(config.greeting, ctx);
+    const description = this.resolveMenuText(config.description, ctx);
+    const siteUrl = text(config.siteUrl);
+
+    if (greeting) {
+      lines.push(greeting);
+    }
+
+    if (description) {
+      if (lines.length) {
+        lines.push('');
+      }
+      lines.push(description);
+    }
+
+    if (siteUrl) {
+      if (lines.length) {
+        lines.push('');
+      }
+      lines.push(`Saiba mais: ${siteUrl}`);
+    }
+
+    if (config.buttons.length) {
+      if (lines.length) {
+        lines.push('');
+      }
+      lines.push('Atalhos:');
+      config.buttons.forEach((button, index) => {
+        const emoji = button.emoji ? `${button.emoji} ` : '';
+        lines.push(`${index + 1}. ${emoji}${button.label} -> ${button.command}`);
+      });
+    }
+
+    return lines.join('\n').trim() || MENU_FALLBACK_TEXT;
+  }
+
+  async handleMenu(ctx) {
+    const config = this.loadMenuConfig();
+    const message = this.buildMenuMessage(ctx, config);
+    await this.reply(ctx, message);
+  }
+
   updateFlood(chatId, userId) {
     const key = `${chatId}:${userId}`;
     const now = Date.now();
@@ -522,7 +626,7 @@ class CommandRouter {
         await this.handleHelp(ctx);
         return;
       case 'core.menu':
-        await this.reply(ctx, '📋 Menu rapido: /start /help /settings /alerts /tokens /ping');
+        await this.handleMenu(ctx);
         return;
       case 'core.settings':
         await this.handleSettings(ctx);
