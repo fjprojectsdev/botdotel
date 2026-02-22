@@ -47,7 +47,7 @@ class SchedulerService {
   }
 
   buildScheduleMessage(schedule) {
-    const prefix = schedule.kind === 'poll' ? '?? AGENDAMENTO (Enquete)' : '? AGENDAMENTO';
+    const prefix = schedule.kind === 'poll' ? '📊 AGENDAMENTO (Enquete)' : '📅 AGENDAMENTO';
     return `${prefix}\n\n${schedule.content}`;
   }
 

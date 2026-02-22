@@ -5,27 +5,27 @@ class FormatService {
     const usd = Number(usdValue) || 0;
 
     if (usd >= 250_000) {
-      return { label: 'Leviathan Buy', emoji: '??' };
+      return { label: 'Leviathan Buy', emoji: '🦈' };
     }
     if (usd >= 100_000) {
-      return { label: 'Mega Whale Buy', emoji: '??' };
+      return { label: 'Mega Whale Buy', emoji: '🐳' };
     }
     if (usd >= 25_000) {
-      return { label: 'Whale Buy', emoji: '??' };
+      return { label: 'Whale Buy', emoji: '🐋' };
     }
     if (usd >= 5_000) {
-      return { label: 'Smart Money Buy', emoji: '??' };
+      return { label: 'Smart Money Buy', emoji: '🧠' };
     }
 
-    return { label: 'Buy', emoji: '??' };
+    return { label: 'Buy', emoji: '✅' };
   }
 
   topEmoji(usdValue) {
     const usd = Number(usdValue) || 0;
     if (usd >= 100_000) {
-      return '??';
+      return '🚀';
     }
-    return '??';
+    return '🟢';
   }
 
   shortWallet(wallet) {
@@ -100,22 +100,25 @@ class FormatService {
     const tokenLabel = event.tokenName
       ? `${event.tokenName} (${event.tokenSymbol || 'TOKEN'})`
       : event.tokenSymbol || 'TOKEN';
-    const txUrl = this.explorerTxUrl(event.network, event.hash);
+    const txHash = String(event.hash || '').trim();
+    const txUrl = this.explorerTxUrl(event.network, txHash);
+    const txHashShort =
+      txHash.length > 18 ? `${txHash.slice(0, 10)}...${txHash.slice(-8)}` : txHash || 'N/A';
 
     const lines = [
       `${this.topEmoji(event.usdValue)} NOVA COMPRA`,
       '',
-      `?? ${tokenLabel}`,
-      `?? ${amount} ${event.tokenSymbol || ''}`.trim(),
-      `?? ${usd}`,
+      `🪙 Token: ${tokenLabel}`,
+      `💰 Quantidade: ${amount} ${event.tokenSymbol || ''}`.trim(),
+      `💵 Valor USD: ${usd}`,
       `${whale.emoji} ${whale.label}`,
-      `?? ${networkLabel}`,
-      `?? ${this.shortWallet(event.buyer)}`,
-      `?? MCap: ${marketCap}`,
+      `🌍 Rede: ${networkLabel}`,
+      `👤 Wallet: ${this.shortWallet(event.buyer)}`,
+      `📊 MCap: ${marketCap}`,
       '',
-      `?? View: ${event.dexUrl || 'N/A'}`,
-      `?? Tx: ${txUrl || event.hash || 'N/A'}`,
-      `#?? Hash: ${event.hash || 'N/A'}`
+      `🔎 DexScreener: ${event.dexUrl || 'N/A'}`,
+      `🔗 Tx: ${txUrl || 'N/A'}`,
+      `🧾 Hash: ${txHashShort}`
     ];
 
     return lines.join('\n');

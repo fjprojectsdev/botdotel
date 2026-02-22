@@ -493,7 +493,7 @@ const loadMembersFromGroupAdmins = async ({ groups, telegramClient, limit, logge
 };
 
 const scheduleMessageText = (schedule) => {
-  const prefix = schedule.kind === 'poll' ? '?? AGENDAMENTO (Enquete)' : '? AGENDAMENTO';
+  const prefix = schedule.kind === 'poll' ? '📊 AGENDAMENTO (Enquete)' : '📅 AGENDAMENTO';
   return `${prefix}\n\n${schedule.content}`;
 };
 
