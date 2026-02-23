@@ -11,8 +11,32 @@ const state = {
   members: [],
   commandCategories: [],
   schedules: [],
+  automation: {
+    modules: [],
+    strikeTriggers: [],
+    strikeLadder: [],
+    whitelist: [],
+    logs: [],
+    overview: {
+      pending: 0,
+      resolved: 0,
+      bans: 0,
+      strikes: 0
+    }
+  },
+  moderation: {
+    overview: {
+      pending: 0,
+      resolved: 0,
+      bans: 0,
+      strikes: 0
+    },
+    logs: []
+  },
+  broadcasts: [],
   filteredTransactions: [],
   currentView: 'overview',
+  automationTab: 'modules',
   periodDays: 30,
   groupSearch: '',
   memberSearch: '',
@@ -38,6 +62,9 @@ const viewTitles = {
   members: 'Membros Ativos',
   commands: 'Gerenciar Comandos',
   schedules: 'Agendamentos',
+  automation: 'Automacoes & Moderacao',
+  moderation: 'Moderacao',
+  broadcast: 'Broadcast',
   tokens: 'Tokens Monitorados',
   activity: 'Atividade',
   settings: 'Configuracoes'
@@ -151,6 +178,32 @@ const refs = {
   membersTbody: document.getElementById('membersTbody'),
   commandsAccordion: document.getElementById('commandsAccordion'),
   schedulesTbody: document.getElementById('schedulesTbody'),
+  automationTabs: document.getElementById('automationTabs'),
+  automationModulesList: document.getElementById('automationModulesList'),
+  strikeTriggersList: document.getElementById('strikeTriggersList'),
+  strikeLadderList: document.getElementById('strikeLadderList'),
+  whitelistForm: document.getElementById('whitelistForm'),
+  whitelistTypeInput: document.getElementById('whitelistTypeInput'),
+  whitelistValueInput: document.getElementById('whitelistValueInput'),
+  whitelistNoteInput: document.getElementById('whitelistNoteInput'),
+  whitelistList: document.getElementById('whitelistList'),
+  moderationLogTypeFilter: document.getElementById('moderationLogTypeFilter'),
+  moderationLogStatusFilter: document.getElementById('moderationLogStatusFilter'),
+  refreshAutomationLogsBtn: document.getElementById('refreshAutomationLogsBtn'),
+  moderationLogsList: document.getElementById('moderationLogsList'),
+  modPending: document.getElementById('modPending'),
+  modBans: document.getElementById('modBans'),
+  modResolved: document.getElementById('modResolved'),
+  modStrikes: document.getElementById('modStrikes'),
+  moderationTableBody: document.getElementById('moderationTableBody'),
+  broadcastForm: document.getElementById('broadcastForm'),
+  broadcastTitleInput: document.getElementById('broadcastTitleInput'),
+  broadcastContentInput: document.getElementById('broadcastContentInput'),
+  broadcastMediaUrlInput: document.getElementById('broadcastMediaUrlInput'),
+  broadcastMediaUploadBtn: document.getElementById('broadcastMediaUploadBtn'),
+  broadcastMediaFileInput: document.getElementById('broadcastMediaFileInput'),
+  broadcastGroupChecklist: document.getElementById('broadcastGroupChecklist'),
+  broadcastsTbody: document.getElementById('broadcastsTbody'),
   tokensTbody: document.getElementById('tokensTbody'),
   txTbody: document.getElementById('txTbody'),
 
@@ -1450,6 +1503,237 @@ const renderSchedules = () => {
     .join('');
 };
 
+const renderAutomation = () => {
+  if (!refs.automationModulesList) {
+    return;
+  }
+
+  const activeGroup = getPrimaryActiveGroup();
+  if (!activeGroup) {
+    refs.automationModulesList.innerHTML = '<p class="placeholder">Ative um grupo para configurar automacoes.</p>';
+    refs.strikeTriggersList.innerHTML = '<p class="placeholder">Ative um grupo para configurar gatilhos.</p>';
+    refs.strikeLadderList.innerHTML = '<p class="placeholder">Ative um grupo para configurar escada.</p>';
+    refs.whitelistList.innerHTML = '<p class="placeholder">Ative um grupo para configurar whitelist.</p>';
+    refs.moderationLogsList.innerHTML = '<p class="placeholder">Sem logs.</p>';
+    return;
+  }
+
+  const modules = Array.isArray(state.automation?.modules) ? state.automation.modules : [];
+  const triggers = Array.isArray(state.automation?.strikeTriggers) ? state.automation.strikeTriggers : [];
+  const ladder = Array.isArray(state.automation?.strikeLadder) ? state.automation.strikeLadder : [];
+  const whitelist = Array.isArray(state.automation?.whitelist) ? state.automation.whitelist : [];
+  const logs = Array.isArray(state.automation?.logs) ? state.automation.logs : [];
+
+  refs.automationModulesList.innerHTML = modules.length
+    ? modules
+        .map((item) => {
+          return `<article class="stack-item">
+          <div class="stack-main">
+            <strong>${escapeHtml(item.label || item.key)}</strong>
+            <p>${escapeHtml(item.description || '-')}</p>
+          </div>
+          <div class="stack-actions">
+            <button
+              class="toggle-switch ${item.enabled ? 'on' : ''}"
+              data-action="automation-module-toggle"
+              data-key="${escapeHtml(item.key)}"
+              data-enabled="${item.enabled ? 1 : 0}"
+              type="button"
+            ></button>
+            <button class="btn btn-small btn-soft" data-action="automation-module-config" data-key="${escapeHtml(
+              item.key
+            )}" type="button">Configurar</button>
+          </div>
+        </article>`;
+        })
+        .join('')
+    : '<p class="placeholder">Nenhum modulo disponivel.</p>';
+
+  refs.strikeTriggersList.innerHTML = triggers.length
+    ? triggers
+        .map((item) => {
+          return `<article class="stack-item">
+          <div class="stack-main">
+            <strong>${escapeHtml(item.label || item.key)}</strong>
+            <p>${escapeHtml(item.description || '-')}</p>
+            <div class="panel-hint">${escapeHtml(
+              `${item.strike_points || 1} strike${Number(item.strike_points || 1) > 1 ? 's' : ''}`
+            )}</div>
+          </div>
+          <div class="stack-actions">
+            <button
+              class="toggle-switch ${item.enabled ? 'on' : ''}"
+              data-action="strike-trigger-toggle"
+              data-key="${escapeHtml(item.key)}"
+              data-enabled="${item.enabled ? 1 : 0}"
+              type="button"
+            ></button>
+            <button class="btn btn-small btn-soft" data-action="strike-trigger-config" data-key="${escapeHtml(
+              item.key
+            )}" type="button">Configurar</button>
+          </div>
+        </article>`;
+        })
+        .join('')
+    : '<p class="placeholder">Nenhum gatilho disponivel.</p>';
+
+  refs.strikeLadderList.innerHTML = ladder.length
+    ? ladder
+        .map((item) => {
+          return `<article class="stack-item">
+          <div class="stack-main">
+            <strong>${escapeHtml(`${item.step}o Strike`)}</strong>
+            <p>${escapeHtml(
+              `Acao: ${String(item.action || 'warn').toUpperCase()} | Duracao: ${item.duration_minutes || 0} min`
+            )}</p>
+            <div class="panel-hint">${escapeHtml(shortText(item.message_template || '-', 96, 0))}</div>
+          </div>
+          <div class="stack-actions">
+            <span class="badge ${item.enabled ? 'badge-ok' : 'badge-off'}">${item.enabled ? 'Ativo' : 'Off'}</span>
+            <button class="btn btn-small btn-soft" data-action="strike-ladder-config" data-step="${
+              item.step
+            }" type="button">Configurar</button>
+          </div>
+        </article>`;
+        })
+        .join('')
+    : '<p class="placeholder">Escada nao configurada.</p>';
+
+  refs.whitelistList.innerHTML = whitelist.length
+    ? whitelist
+        .map((item) => {
+          const value = item.target_type === 'username' ? `@${item.target_value}` : item.target_value;
+          return `<article class="stack-item">
+          <div class="stack-main">
+            <strong>${escapeHtml(item.target_type)}</strong>
+            <p>${escapeHtml(value || '-')}</p>
+            <div class="panel-hint">${escapeHtml(item.note || 'Sem nota')}</div>
+          </div>
+          <div class="stack-actions">
+            <button class="btn btn-small btn-danger" data-action="whitelist-remove" data-id="${item.id}" type="button">Remover</button>
+          </div>
+        </article>`;
+        })
+        .join('')
+    : '<p class="placeholder">Nenhum usuario na whitelist.</p>';
+
+  refs.moderationLogsList.innerHTML = logs.length
+    ? logs
+        .map((item) => {
+          return `<article class="stack-item">
+          <div class="stack-main">
+            <strong>${escapeHtml(item.event_type || '-')}</strong>
+            <p>${escapeHtml(item.reason || 'Sem motivo')}</p>
+            <div class="panel-hint">${escapeHtml(
+              `${new Date(item.created_at).toLocaleString('pt-BR')} | status ${item.status || '-'} | user ${
+                item.user_id || '-'
+              }`
+            )}</div>
+          </div>
+          <div class="stack-actions">
+            <span class="badge badge-soft">${escapeHtml(item.status || '-')}</span>
+          </div>
+        </article>`;
+        })
+        .join('')
+    : '<p class="placeholder">Nenhum log de moderacao para o periodo.</p>';
+
+  const panes = Array.from(document.querySelectorAll('[data-automation-pane]'));
+  const tabs = Array.from(document.querySelectorAll('[data-automation-tab]'));
+  panes.forEach((pane) => {
+    pane.classList.toggle('active', pane.dataset.automationPane === state.automationTab);
+  });
+  tabs.forEach((tab) => {
+    tab.classList.toggle('active', tab.dataset.automationTab === state.automationTab);
+  });
+};
+
+const renderModeration = () => {
+  if (!refs.moderationTableBody) {
+    return;
+  }
+
+  const overview = state.moderation?.overview || state.automation?.overview || {};
+  const logs = Array.isArray(state.moderation?.logs) ? state.moderation.logs : [];
+
+  if (refs.modPending) {
+    refs.modPending.textContent = formatCompact(overview.pending || 0);
+  }
+  if (refs.modBans) {
+    refs.modBans.textContent = formatCompact(overview.bans || 0);
+  }
+  if (refs.modResolved) {
+    refs.modResolved.textContent = formatCompact(overview.resolved || 0);
+  }
+  if (refs.modStrikes) {
+    refs.modStrikes.textContent = formatCompact(overview.strikes || 0);
+  }
+
+  if (!logs.length) {
+    refs.moderationTableBody.innerHTML =
+      '<tr><td colspan="5" class="placeholder">Nenhuma denuncia pendente.</td></tr>';
+    return;
+  }
+
+  refs.moderationTableBody.innerHTML = logs
+    .map((item) => {
+      const when = item.created_at ? new Date(item.created_at).toLocaleString('pt-BR') : '-';
+      return `<tr>
+        <td>${escapeHtml(when)}</td>
+        <td>${escapeHtml(item.event_type || '-')}</td>
+        <td>${escapeHtml(item.user_id ? shortText(item.user_id, 6, 4) : '-')}</td>
+        <td><span class="badge badge-soft">${escapeHtml(item.status || '-')}</span></td>
+        <td>${escapeHtml(shortText(item.reason || '-', 56, 0))}</td>
+      </tr>`;
+    })
+    .join('');
+};
+
+const renderBroadcastGroupChecklist = () => {
+  if (!refs.broadcastGroupChecklist) {
+    return;
+  }
+
+  const activeGroups = state.groups.filter((group) => isEnabled(group.enabled));
+  if (!activeGroups.length) {
+    refs.broadcastGroupChecklist.innerHTML = '<p class="placeholder">Nenhum grupo ativo para broadcast.</p>';
+    return;
+  }
+
+  refs.broadcastGroupChecklist.innerHTML = activeGroups
+    .map((group) => {
+      return `<label class="group-check-item">
+        <input type="checkbox" name="broadcast_group_id" value="${escapeHtml(group.chat_id)}" />
+        <span>${escapeHtml(group.label)} (${escapeHtml(shortText(group.chat_id, 8, 5))})</span>
+      </label>`;
+    })
+    .join('');
+};
+
+const renderBroadcasts = () => {
+  if (!refs.broadcastsTbody) {
+    return;
+  }
+
+  const rows = Array.isArray(state.broadcasts) ? state.broadcasts : [];
+  if (!rows.length) {
+    refs.broadcastsTbody.innerHTML = '<tr><td colspan="5" class="placeholder">Nenhum broadcast enviado.</td></tr>';
+    return;
+  }
+
+  refs.broadcastsTbody.innerHTML = rows
+    .map((item) => {
+      return `<tr>
+        <td>${escapeHtml(item.title || shortText(item.content || '-', 48, 0))}</td>
+        <td><span class="badge badge-soft">${escapeHtml(item.status || '-')}</span></td>
+        <td>${escapeHtml(formatNumber(item.sent_count || 0, 0))}</td>
+        <td>${escapeHtml(formatNumber(item.fail_count || 0, 0))}</td>
+        <td>${escapeHtml(item.created_at ? new Date(item.created_at).toLocaleString('pt-BR') : '-')}</td>
+      </tr>`;
+    })
+    .join('');
+};
+
 const renderTokens = () => {
   if (!state.tokens.length) {
     refs.tokensTbody.innerHTML = '<tr><td colspan="6" class="placeholder">Nenhum token cadastrado.</td></tr>';
@@ -1594,6 +1878,10 @@ const renderAll = () => {
   renderMembers();
   renderCommands();
   renderSchedules();
+  renderAutomation();
+  renderModeration();
+  renderBroadcastGroupChecklist();
+  renderBroadcasts();
   renderTokens();
   renderTransactions();
   renderNetworkSelect();
@@ -1621,7 +1909,8 @@ const loadData = async ({ silent = false, suppressErrors = false } = {}) => {
         transactionsPayload,
         membersPayload,
         commandsPayload,
-        schedulesPayload
+        schedulesPayload,
+        broadcastsPayload
       ] = await Promise.all([
         apiFetch('/api/networks'),
         apiFetch('/api/stats'),
@@ -1631,7 +1920,8 @@ const loadData = async ({ silent = false, suppressErrors = false } = {}) => {
         apiFetch('/api/transactions?limit=300'),
         apiFetch(`/api/members?days=${encodeURIComponent(days)}&limit=350`),
         apiFetch('/api/commands'),
-        apiFetch('/api/schedules?limit=300')
+        apiFetch('/api/schedules?limit=300'),
+        apiFetch('/api/broadcasts?limit=200')
       ]);
 
       state.networks = networksPayload?.networks || [];
@@ -1645,7 +1935,58 @@ const loadData = async ({ silent = false, suppressErrors = false } = {}) => {
       state.transactions = transactionsPayload?.transactions || [];
       state.members = membersPayload?.members || [];
       state.schedules = schedulesPayload?.schedules || [];
+      state.broadcasts = broadcastsPayload?.broadcasts || [];
       setCommandCategories(commandsPayload?.categories || []);
+
+      const activeGroup = getPrimaryActiveGroup();
+      if (activeGroup?.id) {
+        const [automationPayload, moderationPayload] = await Promise.all([
+          apiFetch(`/api/groups/${activeGroup.id}/automation?limit=180`),
+          apiFetch(`/api/moderation?groupId=${encodeURIComponent(activeGroup.id)}&limit=180`)
+        ]);
+
+        state.automation = {
+          modules: automationPayload?.modules || [],
+          strikeTriggers: automationPayload?.strikeTriggers || [],
+          strikeLadder: automationPayload?.strikeLadder || [],
+          whitelist: automationPayload?.whitelist || [],
+          logs: automationPayload?.logs || [],
+          overview: automationPayload?.overview || {
+            pending: 0,
+            resolved: 0,
+            bans: 0,
+            strikes: 0
+          }
+        };
+
+        state.moderation = {
+          overview: moderationPayload?.overview || state.automation.overview,
+          logs: moderationPayload?.logs || state.automation.logs || []
+        };
+      } else {
+        state.automation = {
+          modules: [],
+          strikeTriggers: [],
+          strikeLadder: [],
+          whitelist: [],
+          logs: [],
+          overview: {
+            pending: 0,
+            resolved: 0,
+            bans: 0,
+            strikes: 0
+          }
+        };
+        state.moderation = {
+          overview: {
+            pending: 0,
+            resolved: 0,
+            bans: 0,
+            strikes: 0
+          },
+          logs: []
+        };
+      }
 
       applyPeriodFilter();
       renderAll();
@@ -2119,6 +2460,65 @@ const handleScheduleSave = async () => {
   await loadData({ silent: true });
 };
 
+const getActiveGroupForAutomation = () => {
+  const active = getPrimaryActiveGroup();
+  if (!active?.id) {
+    throw new Error('Nenhum grupo ativo para automacao.');
+  }
+  return active;
+};
+
+const refreshAutomationLogs = async () => {
+  const group = getActiveGroupForAutomation();
+  const eventType = String(refs.moderationLogTypeFilter?.value || '').trim();
+  const status = String(refs.moderationLogStatusFilter?.value || '').trim();
+  const query = new URLSearchParams();
+  query.set('limit', '200');
+  if (eventType) {
+    query.set('eventType', eventType);
+  }
+  if (status) {
+    query.set('status', status);
+  }
+
+  const payload = await apiFetch(`/api/groups/${group.id}/automation/logs?${query.toString()}`);
+  state.automation.logs = payload?.logs || [];
+  state.moderation.logs = state.automation.logs;
+  renderAutomation();
+  renderModeration();
+};
+
+const getSelectedBroadcastGroups = () => {
+  if (!refs.broadcastGroupChecklist) {
+    return [];
+  }
+  return Array.from(refs.broadcastGroupChecklist.querySelectorAll('input[name="broadcast_group_id"]:checked'))
+    .map((element) => String(element.value || '').trim())
+    .filter(Boolean);
+};
+
+const handleBroadcastSave = async () => {
+  const payload = {
+    title: String(refs.broadcastTitleInput?.value || '').trim(),
+    content: String(refs.broadcastContentInput?.value || '').trim(),
+    media_url: normalizeOptionalMediaUrl(refs.broadcastMediaUrlInput?.value || '', 'URL de imagem do broadcast'),
+    group_ids: getSelectedBroadcastGroups()
+  };
+
+  if (!payload.content) {
+    throw new Error('Mensagem de broadcast obrigatoria.');
+  }
+
+  await apiFetch('/api/broadcasts', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+
+  showToast('Broadcast enviado.');
+  refs.broadcastForm?.reset();
+  await loadData({ silent: true });
+};
+
 const handleLoginSubmit = async () => {
   const apiBase = normalizeApiBase(refs.loginApiUrlInput?.value || '');
   const authUser = String(refs.loginUserInput?.value || '').trim();
@@ -2204,6 +2604,14 @@ const bindEvents = () => {
       closeActionsMenu();
       state.currentView = button.dataset.navView || 'overview';
       renderView();
+      if (state.currentView === 'automation') {
+        renderAutomation();
+      } else if (state.currentView === 'moderation') {
+        renderModeration();
+      } else if (state.currentView === 'broadcast') {
+        renderBroadcastGroupChecklist();
+        renderBroadcasts();
+      }
     });
   });
 
@@ -2269,6 +2677,66 @@ const bindEvents = () => {
     state.scheduleSearch = event.target.value || '';
     renderSchedules();
   });
+
+  if (refs.automationTabs) {
+    refs.automationTabs.addEventListener('click', (event) => {
+      const tab = event.target.closest('[data-automation-tab]');
+      if (!tab) {
+        return;
+      }
+      state.automationTab = tab.dataset.automationTab || 'modules';
+      renderAutomation();
+    });
+  }
+
+  if (refs.whitelistForm) {
+    refs.whitelistForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+      withButtonLock(getSubmitButton(event), async () => {
+        const group = getActiveGroupForAutomation();
+        await apiFetch(`/api/groups/${group.id}/automation/whitelist`, {
+          method: 'POST',
+          body: JSON.stringify({
+            target_type: refs.whitelistTypeInput.value,
+            target_value: refs.whitelistValueInput.value,
+            note: refs.whitelistNoteInput.value
+          })
+        });
+        refs.whitelistForm.reset();
+        showToast('Whitelist atualizada.');
+        await loadData({ silent: true });
+      }).catch((error) => {
+        showToast(error.message || 'Falha ao adicionar whitelist.', true);
+      });
+    });
+  }
+
+  if (refs.refreshAutomationLogsBtn) {
+    refs.refreshAutomationLogsBtn.addEventListener('click', () =>
+      withButtonLock(refs.refreshAutomationLogsBtn, async () => {
+        await refreshAutomationLogs();
+        showToast('Logs atualizados.');
+      }).catch((error) => {
+        showToast(error.message || 'Falha ao atualizar logs.', true);
+      })
+    );
+  }
+
+  if (refs.moderationLogTypeFilter) {
+    refs.moderationLogTypeFilter.addEventListener('change', () => {
+      refreshAutomationLogs().catch((error) => {
+        showToast(error.message || 'Falha ao filtrar logs.', true);
+      });
+    });
+  }
+
+  if (refs.moderationLogStatusFilter) {
+    refs.moderationLogStatusFilter.addEventListener('change', () => {
+      refreshAutomationLogs().catch((error) => {
+        showToast(error.message || 'Falha ao filtrar logs.', true);
+      });
+    });
+  }
 
   refs.groupPermissionsForm.addEventListener('submit', (event) => {
     event.preventDefault();
@@ -2380,6 +2848,42 @@ const bindEvents = () => {
       }).catch((error) => {
         refs.scheduleMediaFileInput.value = '';
         showToast(error.message || 'Falha no upload da imagem do agendamento.', true);
+      });
+    });
+  }
+
+  if (refs.broadcastMediaUploadBtn && refs.broadcastMediaFileInput) {
+    refs.broadcastMediaUploadBtn.addEventListener('click', () => {
+      refs.broadcastMediaFileInput.value = '';
+      refs.broadcastMediaFileInput.click();
+    });
+
+    refs.broadcastMediaFileInput.addEventListener('change', () => {
+      withButtonLock(refs.broadcastMediaUploadBtn, async () => {
+        const file = refs.broadcastMediaFileInput.files?.[0];
+        if (!file) {
+          return;
+        }
+
+        const uploaded = await uploadImageFile(file, {
+          scope: 'broadcast',
+          fileName: file.name
+        });
+        refs.broadcastMediaUrlInput.value = uploaded.url;
+        refs.broadcastMediaFileInput.value = '';
+        showToast('Imagem de broadcast enviada.');
+      }).catch((error) => {
+        refs.broadcastMediaFileInput.value = '';
+        showToast(error.message || 'Falha no upload de broadcast.', true);
+      });
+    });
+  }
+
+  if (refs.broadcastForm) {
+    refs.broadcastForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+      withButtonLock(getSubmitButton(event), handleBroadcastSave).catch((error) => {
+        showToast(error.message || 'Erro ao enviar broadcast.', true);
       });
     });
   }
@@ -2657,6 +3161,168 @@ const bindEvents = () => {
         }
         await apiFetch(`/api/groups/${id}`, { method: 'DELETE' });
         showToast('Grupo excluido.');
+        await loadData({ silent: true });
+        return;
+      }
+
+      if (action === 'automation-module-toggle') {
+        const group = getActiveGroupForAutomation();
+        const key = String(trigger.dataset.key || '').trim();
+        const enabled = trigger.dataset.enabled === '1';
+        await apiFetch(`/api/groups/${group.id}/automation/modules`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            key,
+            enabled: !enabled
+          })
+        });
+        showToast(`Modulo ${!enabled ? 'ativado' : 'desativado'}.`);
+        await loadData({ silent: true });
+        return;
+      }
+
+      if (action === 'automation-module-config') {
+        const group = getActiveGroupForAutomation();
+        const key = String(trigger.dataset.key || '').trim();
+        const current = (state.automation?.modules || []).find((item) => item.key === key);
+        const initial = JSON.stringify(current?.config || {}, null, 2);
+        const raw = window.prompt(`Config JSON para modulo "${key}"`, initial);
+        if (raw === null) {
+          return;
+        }
+        let config = {};
+        try {
+          config = JSON.parse(raw || '{}');
+        } catch (_error) {
+          throw new Error('JSON invalido para configuracao do modulo.');
+        }
+
+        await apiFetch(`/api/groups/${group.id}/automation/modules`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            key,
+            enabled: current?.enabled ?? true,
+            config
+          })
+        });
+        showToast('Configuracao do modulo salva.');
+        await loadData({ silent: true });
+        return;
+      }
+
+      if (action === 'strike-trigger-toggle') {
+        const group = getActiveGroupForAutomation();
+        const key = String(trigger.dataset.key || '').trim();
+        const enabled = trigger.dataset.enabled === '1';
+        const current = (state.automation?.strikeTriggers || []).find((item) => item.key === key);
+        await apiFetch(`/api/groups/${group.id}/automation/strike-triggers`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            key,
+            enabled: !enabled,
+            strike_points: current?.strike_points || 1,
+            config: current?.config || {}
+          })
+        });
+        showToast(`Gatilho ${!enabled ? 'ativado' : 'desativado'}.`);
+        await loadData({ silent: true });
+        return;
+      }
+
+      if (action === 'strike-trigger-config') {
+        const group = getActiveGroupForAutomation();
+        const key = String(trigger.dataset.key || '').trim();
+        const current = (state.automation?.strikeTriggers || []).find((item) => item.key === key);
+        const pointsRaw = window.prompt(`Quantos strikes para "${key}"?`, String(current?.strike_points || 1));
+        if (pointsRaw === null) {
+          return;
+        }
+        const strikePoints = Math.max(1, Number(pointsRaw || 1) || 1);
+        const configRaw = window.prompt(
+          `Config JSON para gatilho "${key}"`,
+          JSON.stringify(current?.config || {}, null, 2)
+        );
+        if (configRaw === null) {
+          return;
+        }
+        let config = {};
+        try {
+          config = JSON.parse(configRaw || '{}');
+        } catch (_error) {
+          throw new Error('JSON invalido para gatilho.');
+        }
+
+        await apiFetch(`/api/groups/${group.id}/automation/strike-triggers`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            key,
+            enabled: current?.enabled ?? true,
+            strike_points: strikePoints,
+            config
+          })
+        });
+        showToast('Configuracao do gatilho salva.');
+        await loadData({ silent: true });
+        return;
+      }
+
+      if (action === 'strike-ladder-config') {
+        const group = getActiveGroupForAutomation();
+        const step = Number(trigger.dataset.step || 0);
+        if (!step) {
+          return;
+        }
+        const current = (state.automation?.strikeLadder || []).find((item) => Number(item.step) === step);
+        const actionName = window.prompt(
+          `Acao para ${step}o strike (none|warn|mute|kick|ban)`,
+          String(current?.action || 'warn')
+        );
+        if (actionName === null) {
+          return;
+        }
+        const durationRaw = window.prompt(
+          `Duracao em minutos (quando acao for mute)`,
+          String(current?.duration_minutes || 0)
+        );
+        if (durationRaw === null) {
+          return;
+        }
+        const template = window.prompt(
+          `Mensagem para ${step}o strike`,
+          String(current?.message_template || '')
+        );
+        if (template === null) {
+          return;
+        }
+        await apiFetch(`/api/groups/${group.id}/automation/strike-ladder`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            items: [
+              {
+                step,
+                action: String(actionName || 'warn').trim().toLowerCase(),
+                duration_minutes: Math.max(0, Number(durationRaw || 0) || 0),
+                message_template: String(template || ''),
+                enabled: current?.enabled ?? true
+              }
+            ]
+          })
+        });
+        showToast('Escada de punicao atualizada.');
+        await loadData({ silent: true });
+        return;
+      }
+
+      if (action === 'whitelist-remove') {
+        const group = getActiveGroupForAutomation();
+        const id = Number(trigger.dataset.id || 0);
+        if (!id) {
+          return;
+        }
+        await apiFetch(`/api/groups/${group.id}/automation/whitelist/${id}`, {
+          method: 'DELETE'
+        });
+        showToast('Item removido da whitelist.');
         await loadData({ silent: true });
         return;
       }

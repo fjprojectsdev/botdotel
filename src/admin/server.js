@@ -411,6 +411,93 @@ const buildSchedulePayload = (body) => {
   };
 };
 
+const buildAutomationModulePayload = (body = {}) => {
+  const hasKey = body.key !== undefined;
+  if (hasKey) {
+    return {
+      key: String(body.key || '').trim().toLowerCase(),
+      enabled: body.enabled === undefined ? undefined : asBoolean(body.enabled, false),
+      config:
+        body.config && typeof body.config === 'object' && !Array.isArray(body.config)
+          ? body.config
+          : undefined
+    };
+  }
+
+  const modules = Array.isArray(body.modules) ? body.modules : [];
+  return modules.map((item) => ({
+    key: String(item?.key || '').trim().toLowerCase(),
+    enabled: item?.enabled === undefined ? undefined : asBoolean(item.enabled, false),
+    config:
+      item?.config && typeof item.config === 'object' && !Array.isArray(item.config)
+        ? item.config
+        : undefined
+  }));
+};
+
+const buildStrikeTriggerPayload = (body = {}) => {
+  const hasKey = body.key !== undefined;
+  if (hasKey) {
+    return {
+      key: String(body.key || '').trim().toLowerCase(),
+      enabled: body.enabled === undefined ? undefined : asBoolean(body.enabled, false),
+      strike_points: Math.max(1, Number(body.strike_points || body.strikePoints || 1) || 1),
+      config:
+        body.config && typeof body.config === 'object' && !Array.isArray(body.config)
+          ? body.config
+          : undefined
+    };
+  }
+
+  const triggers = Array.isArray(body.triggers) ? body.triggers : [];
+  return triggers.map((item) => ({
+    key: String(item?.key || '').trim().toLowerCase(),
+    enabled: item?.enabled === undefined ? undefined : asBoolean(item.enabled, false),
+    strike_points: Math.max(1, Number(item?.strike_points || item?.strikePoints || 1) || 1),
+    config:
+      item?.config && typeof item.config === 'object' && !Array.isArray(item.config)
+        ? item.config
+        : undefined
+  }));
+};
+
+const buildStrikeLadderPayload = (body = {}) => {
+  const items = Array.isArray(body.items) ? body.items : [];
+  if (!items.length && body.step !== undefined) {
+    return [
+      {
+        step: Math.max(1, Number(body.step) || 1),
+        action: String(body.action || '').trim().toLowerCase(),
+        duration_minutes: Math.max(0, Number(body.duration_minutes || body.durationMinutes || 0) || 0),
+        message_template: body.message_template === undefined ? undefined : String(body.message_template || ''),
+        enabled: body.enabled === undefined ? undefined : asBoolean(body.enabled, true)
+      }
+    ];
+  }
+
+  return items.map((item) => ({
+    step: Math.max(1, Number(item?.step) || 1),
+    action: String(item?.action || '').trim().toLowerCase(),
+    duration_minutes: Math.max(0, Number(item?.duration_minutes || item?.durationMinutes || 0) || 0),
+    message_template: item?.message_template === undefined ? undefined : String(item.message_template || ''),
+    enabled: item?.enabled === undefined ? undefined : asBoolean(item.enabled, true)
+  }));
+};
+
+const buildWhitelistPayload = (body = {}) => ({
+  target_type: String(body.target_type || body.targetType || '').trim().toLowerCase(),
+  target_value: String(body.target_value || body.targetValue || '').trim(),
+  note: String(body.note || '').trim()
+});
+
+const buildBroadcastPayload = (body = {}) => ({
+  title: String(body.title || '').trim(),
+  content: String(body.content || body.message || '').trim(),
+  media_url: normalizeMediaUrl(body.media_url || body.mediaUrl || '', 'broadcast media url'),
+  group_ids: normalizeList(body.group_ids || body.groupIds || body.groups || []),
+  created_by: String(body.created_by || body.createdBy || '').trim()
+});
+
 const normalizeLocksPatch = (body = {}) => {
   const patch = {};
 
@@ -659,10 +746,12 @@ const startAdminServer = async ({
       const groups = tokenModel.listGroups({ includeDisabled: true });
       const recent = tokenModel.getRecentTransactions(40);
       const schedules = tokenModel.listSchedules(200);
+      const broadcasts = tokenModel.listBroadcastMessages(200);
 
       const activeTokens = tokens.filter((item) => item.enabled === 1).length;
       const activeGroups = groups.filter((item) => item.enabled === 1).length;
       const pendingSchedules = schedules.filter((item) => item.status === 'pending').length;
+      const sentBroadcasts = broadcasts.filter((item) => String(item.status || '').toLowerCase() === 'sent').length;
 
       res.json({
         uptimeSec: Math.floor(process.uptime()),
@@ -684,6 +773,10 @@ const startAdminServer = async ({
         schedules: {
           total: schedules.length,
           pending: pendingSchedules
+        },
+        broadcasts: {
+          total: broadcasts.length,
+          sent: sentBroadcasts
         },
         recentAlerts: recent.length,
         schedulerRunning: Boolean(schedulerService?.running)
@@ -922,6 +1015,186 @@ const startAdminServer = async ({
         },
         locks
       });
+    })
+  );
+
+  app.get(
+    '/api/groups/:id/automation',
+    asyncRoute(async (req, res) => {
+      const id = Number(req.params.id);
+      const group = tokenModel.getGroupById(id);
+      if (!group) {
+        return res.status(404).json({ error: 'group not found' });
+      }
+
+      const limit = parsePositiveInt(req.query.limit, 120, 1000);
+      const eventType = String(req.query.eventType || '').trim().toLowerCase();
+      const status = String(req.query.status || '').trim().toLowerCase();
+
+      const modules = tokenModel.getGroupAutomationModules(group.chat_id);
+      const strikeTriggers = tokenModel.getGroupStrikeTriggers(group.chat_id);
+      const strikeLadder = tokenModel.getGroupStrikeLadder(group.chat_id);
+      const whitelist = tokenModel.listGroupStrikeWhitelist(group.chat_id);
+      const logs = tokenModel.listModerationLogs(group.chat_id, {
+        limit,
+        eventType,
+        status
+      });
+      const overview = tokenModel.getModerationOverview(group.chat_id, {
+        days: parsePositiveInt(req.query.days, 30, 365)
+      });
+
+      return res.json({
+        group: {
+          id: group.id,
+          chat_id: group.chat_id,
+          label: group.label
+        },
+        modules,
+        strikeTriggers,
+        strikeLadder,
+        whitelist,
+        logs,
+        overview
+      });
+    })
+  );
+
+  app.put(
+    '/api/groups/:id/automation/modules',
+    asyncRoute(async (req, res) => {
+      const id = Number(req.params.id);
+      const group = tokenModel.getGroupById(id);
+      if (!group) {
+        return res.status(404).json({ error: 'group not found' });
+      }
+
+      const payload = buildAutomationModulePayload(req.body || {});
+      if (Array.isArray(payload)) {
+        tokenModel.setGroupAutomationModulesBulk(group.chat_id, payload);
+      } else {
+        if (!payload.key) {
+          return res.status(400).json({ error: 'module key is required' });
+        }
+        tokenModel.setGroupAutomationModule(group.chat_id, payload.key, payload);
+      }
+
+      return res.json({
+        modules: tokenModel.getGroupAutomationModules(group.chat_id)
+      });
+    })
+  );
+
+  app.put(
+    '/api/groups/:id/automation/strike-triggers',
+    asyncRoute(async (req, res) => {
+      const id = Number(req.params.id);
+      const group = tokenModel.getGroupById(id);
+      if (!group) {
+        return res.status(404).json({ error: 'group not found' });
+      }
+
+      const payload = buildStrikeTriggerPayload(req.body || {});
+      if (Array.isArray(payload)) {
+        tokenModel.setGroupStrikeTriggersBulk(group.chat_id, payload);
+      } else {
+        if (!payload.key) {
+          return res.status(400).json({ error: 'trigger key is required' });
+        }
+        tokenModel.setGroupStrikeTrigger(group.chat_id, payload.key, payload);
+      }
+
+      return res.json({
+        strikeTriggers: tokenModel.getGroupStrikeTriggers(group.chat_id)
+      });
+    })
+  );
+
+  app.put(
+    '/api/groups/:id/automation/strike-ladder',
+    asyncRoute(async (req, res) => {
+      const id = Number(req.params.id);
+      const group = tokenModel.getGroupById(id);
+      if (!group) {
+        return res.status(404).json({ error: 'group not found' });
+      }
+
+      const payload = buildStrikeLadderPayload(req.body || {});
+      if (!payload.length) {
+        return res.status(400).json({ error: 'ladder payload is required' });
+      }
+
+      tokenModel.setGroupStrikeLadderBulk(group.chat_id, payload);
+      return res.json({
+        strikeLadder: tokenModel.getGroupStrikeLadder(group.chat_id)
+      });
+    })
+  );
+
+  app.get(
+    '/api/groups/:id/automation/whitelist',
+    asyncRoute(async (req, res) => {
+      const id = Number(req.params.id);
+      const group = tokenModel.getGroupById(id);
+      if (!group) {
+        return res.status(404).json({ error: 'group not found' });
+      }
+
+      return res.json({
+        whitelist: tokenModel.listGroupStrikeWhitelist(group.chat_id)
+      });
+    })
+  );
+
+  app.post(
+    '/api/groups/:id/automation/whitelist',
+    asyncRoute(async (req, res) => {
+      const id = Number(req.params.id);
+      const group = tokenModel.getGroupById(id);
+      if (!group) {
+        return res.status(404).json({ error: 'group not found' });
+      }
+
+      const payload = buildWhitelistPayload(req.body || {});
+      const whitelist = tokenModel.addGroupStrikeWhitelist(group.chat_id, payload);
+      return res.status(201).json({ whitelist });
+    })
+  );
+
+  app.delete(
+    '/api/groups/:id/automation/whitelist/:whitelistId',
+    asyncRoute(async (req, res) => {
+      const id = Number(req.params.id);
+      const whitelistId = Number(req.params.whitelistId);
+      const group = tokenModel.getGroupById(id);
+      if (!group) {
+        return res.status(404).json({ error: 'group not found' });
+      }
+
+      const removed = tokenModel.removeGroupStrikeWhitelist(group.chat_id, whitelistId);
+      if (!removed) {
+        return res.status(404).json({ error: 'whitelist item not found' });
+      }
+
+      return res.status(204).send();
+    })
+  );
+
+  app.get(
+    '/api/groups/:id/automation/logs',
+    asyncRoute(async (req, res) => {
+      const id = Number(req.params.id);
+      const group = tokenModel.getGroupById(id);
+      if (!group) {
+        return res.status(404).json({ error: 'group not found' });
+      }
+
+      const limit = parsePositiveInt(req.query.limit, 150, 1000);
+      const eventType = String(req.query.eventType || '').trim().toLowerCase();
+      const status = String(req.query.status || '').trim().toLowerCase();
+      const logs = tokenModel.listModerationLogs(group.chat_id, { limit, eventType, status });
+
+      return res.json({ logs });
     })
   );
 
@@ -1191,6 +1464,109 @@ const startAdminServer = async ({
           minUsdAlert: queueService.getMinUsdAlert(),
           enabledNetworks
         }
+      });
+    })
+  );
+
+  app.get(
+    '/api/moderation',
+    asyncRoute(async (req, res) => {
+      const days = parsePositiveInt(req.query.days, 30, 365);
+      const groupId = Number(req.query.groupId || 0);
+      const groups = tokenModel.listGroups({ includeDisabled: false });
+      const targetGroup =
+        (groupId && tokenModel.getGroupById(groupId)) || groups.find((group) => group.enabled === 1) || null;
+
+      if (!targetGroup) {
+        return res.json({
+          group: null,
+          overview: {
+            pending: 0,
+            resolved: 0,
+            bans: 0,
+            strikes: 0
+          },
+          logs: []
+        });
+      }
+
+      const overview = tokenModel.getModerationOverview(targetGroup.chat_id, { days });
+      const logs = tokenModel.listModerationLogs(targetGroup.chat_id, {
+        limit: parsePositiveInt(req.query.limit, 120, 1000)
+      });
+
+      return res.json({
+        group: {
+          id: targetGroup.id,
+          chat_id: targetGroup.chat_id,
+          label: targetGroup.label
+        },
+        overview,
+        logs
+      });
+    })
+  );
+
+  app.get(
+    '/api/broadcasts',
+    asyncRoute(async (req, res) => {
+      const limit = parsePositiveInt(req.query.limit, 80, 500);
+      const broadcasts = tokenModel.listBroadcastMessages(limit);
+      return res.json({ broadcasts });
+    })
+  );
+
+  app.post(
+    '/api/broadcasts',
+    asyncRoute(async (req, res) => {
+      const payload = buildBroadcastPayload(req.body || {});
+
+      const groups =
+        payload.group_ids.length > 0
+          ? payload.group_ids
+          : tokenModel.listGroups({ includeDisabled: false }).map((group) => String(group.chat_id || '').trim());
+
+      if (!groups.length) {
+        return res.status(400).json({ error: 'no target groups available for broadcast' });
+      }
+
+      const broadcast = tokenModel.createBroadcastMessage({
+        ...payload,
+        group_ids: groups,
+        status: 'queued'
+      });
+
+      let sentCount = 0;
+      let failCount = 0;
+      for (const chatId of groups) {
+        try {
+          if (payload.media_url) {
+            const content = String(payload.content || '');
+            if (content.length <= 1024) {
+              await telegramClient.sendPhoto(chatId, payload.media_url, content);
+            } else {
+              await telegramClient.sendPhoto(chatId, payload.media_url, payload.title || 'Broadcast');
+              await telegramClient.sendMessage(chatId, content);
+            }
+          } else {
+            await telegramClient.sendMessage(chatId, payload.content);
+          }
+          sentCount += 1;
+        } catch (error) {
+          failCount += 1;
+          logger.warn({ chatId, err: error.message }, 'broadcast send failed for target group');
+        }
+      }
+
+      const status = failCount > 0 ? (sentCount > 0 ? 'partial' : 'failed') : 'sent';
+      const updated = tokenModel.setBroadcastMessageStatus(broadcast.id, {
+        status,
+        sent_count: sentCount,
+        fail_count: failCount
+      });
+
+      return res.status(201).json({
+        broadcast: updated || broadcast
       });
     })
   );

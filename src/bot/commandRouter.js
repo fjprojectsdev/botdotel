@@ -145,6 +145,7 @@ class CommandRouter {
     this.adminCache = new Map();
     this.floodCache = new Map();
     this.spamCache = new Map();
+    this.automationCache = new Map();
   }
 
   async start() {
@@ -161,6 +162,7 @@ class CommandRouter {
     this.adminCache.clear();
     this.floodCache.clear();
     this.spamCache.clear();
+    this.automationCache.clear();
   }
 
   isGroup(chat) {
@@ -313,7 +315,268 @@ class CommandRouter {
     return String(template || '')
       .replaceAll('{name}', text(payload.name || 'membro'))
       .replaceAll('{group}', text(payload.group || 'grupo'))
-      .replaceAll('{user}', text(payload.user || payload.name || 'membro'));
+      .replaceAll('{user}', text(payload.user || payload.name || 'membro'))
+      .replaceAll('{reason}', text(payload.reason || 'sem motivo'))
+      .replaceAll('{strikes}', String(payload.strikes || '0'))
+      .replaceAll('{step}', String(payload.step || '0'))
+      .replaceAll('{duration}', String(payload.duration || '0'));
+  }
+
+  getAutomationSnapshot(chatId, { force = false } = {}) {
+    const safeChatId = String(chatId || '');
+    const now = Date.now();
+    const cached = this.automationCache.get(safeChatId);
+    if (!force && cached && cached.expiresAt > now) {
+      return cached.value;
+    }
+
+    const modules = this.tokenModel.getGroupAutomationModules(safeChatId);
+    const triggers = this.tokenModel.getGroupStrikeTriggers(safeChatId);
+    const ladder = this.tokenModel.getGroupStrikeLadder(safeChatId);
+
+    const moduleMap = new Map(modules.map((item) => [String(item.key || ''), item]));
+    const triggerMap = new Map(triggers.map((item) => [String(item.key || ''), item]));
+    const ladderSorted = [...ladder].sort((a, b) => Number(a.step || 0) - Number(b.step || 0));
+
+    const value = {
+      modules,
+      triggers,
+      ladder: ladderSorted,
+      moduleMap,
+      triggerMap
+    };
+
+    this.automationCache.set(safeChatId, {
+      value,
+      expiresAt: now + 5000
+    });
+
+    return value;
+  }
+
+  isAutomationModuleEnabled(chatId, moduleKey, fallback = false) {
+    const snapshot = this.getAutomationSnapshot(chatId);
+    const row = snapshot.moduleMap.get(String(moduleKey || '').trim().toLowerCase());
+    if (!row) {
+      return fallback;
+    }
+    return row.enabled === true;
+  }
+
+  normalizeArrayConfig(value) {
+    if (Array.isArray(value)) {
+      return value.map((item) => text(item).toLowerCase()).filter(Boolean);
+    }
+    if (typeof value === 'string') {
+      return value
+        .split(',')
+        .map((item) => text(item).toLowerCase())
+        .filter(Boolean);
+    }
+    return [];
+  }
+
+  extractDomainsFromBody(body) {
+    const textBody = String(body || '').toLowerCase();
+    const matches = textBody.match(/(?:https?:\/\/|www\.|t\.me\/)[^\s]+/g) || [];
+    return matches;
+  }
+
+  async logModerationEvent(chatId, payload = {}) {
+    try {
+      this.tokenModel.addModerationLog({
+        chat_id: String(chatId),
+        user_id: String(payload.user_id || ''),
+        actor_id: String(payload.actor_id || ''),
+        event_type: String(payload.event_type || 'unknown'),
+        status: String(payload.status || 'received'),
+        reason: String(payload.reason || ''),
+        details: payload.details && typeof payload.details === 'object' ? payload.details : {}
+      });
+    } catch (error) {
+      this.logger.warn({ err: error.message }, 'failed to persist moderation log');
+    }
+  }
+
+  async applyStrike(chatId, group, user, triggerInfo = {}) {
+    const safeChatId = String(chatId || '');
+    const userId = String(user?.id || '');
+    if (!safeChatId || !userId) {
+      return;
+    }
+
+    const reason = text(triggerInfo.reason || 'violacao de regra');
+    const strikePoints = Math.max(1, Number(triggerInfo.strikePoints) || 1);
+    for (let i = 0; i < strikePoints; i += 1) {
+      this.tokenModel.addWarning({
+        chatId: safeChatId,
+        userId,
+        reason,
+        moderatorId: 'auto'
+      });
+    }
+
+    const total = this.tokenModel.getWarningCount(safeChatId, userId);
+    const snapshot = this.getAutomationSnapshot(safeChatId);
+    const enabledLadder = snapshot.ladder.filter((item) => item.enabled);
+    const stepConfig = enabledLadder
+      .filter((item) => Number(item.step) <= total)
+      .sort((a, b) => Number(a.step) - Number(b.step))
+      .pop();
+
+    const username = text(user?.username ? `@${user.username}` : '');
+    const firstName = text(user?.first_name || user?.id || 'membro');
+    const chatLabel = text(group?.label || safeChatId);
+
+    await this.logModerationEvent(safeChatId, {
+      user_id: userId,
+      actor_id: 'auto',
+      event_type: `trigger.${text(triggerInfo.key || 'unknown').toLowerCase()}`,
+      status: 'strike',
+      reason,
+      details: {
+        strike_points: strikePoints,
+        total_strikes: total
+      }
+    });
+
+    if (!stepConfig) {
+      return;
+    }
+
+    const template =
+      text(stepConfig.message_template) || '@{name}, strike aplicado ({reason}). Total: {strikes}.';
+    const message = this.fillTemplate(template, {
+      name: username || firstName,
+      user: username || firstName,
+      group: chatLabel,
+      reason,
+      strikes: total,
+      step: stepConfig.step,
+      duration: stepConfig.duration_minutes
+    });
+
+    const action = text(stepConfig.action || 'warn').toLowerCase();
+    if (action === 'none') {
+      return;
+    }
+
+    if (action === 'warn') {
+      await this.send(safeChatId, message);
+      await this.logModerationEvent(safeChatId, {
+        user_id: userId,
+        actor_id: 'auto',
+        event_type: 'punishment.warn',
+        status: 'resolved',
+        reason,
+        details: {
+          strikes: total,
+          step: stepConfig.step
+        }
+      });
+      return;
+    }
+
+    if (action === 'mute') {
+      const minutes = Math.max(1, Number(stepConfig.duration_minutes) || 30);
+      try {
+        await this.telegramClient.muteUser(safeChatId, Number(userId), minutes);
+      } catch (_error) {
+        // ignore moderation action errors
+      }
+      await this.send(safeChatId, message);
+      await this.logModerationEvent(safeChatId, {
+        user_id: userId,
+        actor_id: 'auto',
+        event_type: 'punishment.mute',
+        status: 'resolved',
+        reason,
+        details: {
+          strikes: total,
+          step: stepConfig.step,
+          duration_minutes: minutes
+        }
+      });
+      return;
+    }
+
+    if (action === 'kick') {
+      try {
+        await this.telegramClient.kickUser(safeChatId, Number(userId));
+      } catch (_error) {
+        // ignore moderation action errors
+      }
+      await this.send(safeChatId, message);
+      await this.logModerationEvent(safeChatId, {
+        user_id: userId,
+        actor_id: 'auto',
+        event_type: 'punishment.kick',
+        status: 'resolved',
+        reason,
+        details: {
+          strikes: total,
+          step: stepConfig.step
+        }
+      });
+      return;
+    }
+
+    if (action === 'ban') {
+      try {
+        await this.telegramClient.banUser(safeChatId, Number(userId), { revoke_messages: true });
+      } catch (_error) {
+        // ignore moderation action errors
+      }
+      await this.send(safeChatId, message);
+      await this.logModerationEvent(safeChatId, {
+        user_id: userId,
+        actor_id: 'auto',
+        event_type: 'punishment.ban',
+        status: 'resolved',
+        reason,
+        details: {
+          strikes: total,
+          step: stepConfig.step
+        }
+      });
+    }
+  }
+
+  detectTriggerMatch(trigger, bodyText) {
+    const normalizedBody = String(bodyText || '').toLowerCase();
+    const config = trigger?.config && typeof trigger.config === 'object' ? trigger.config : {};
+    const key = String(trigger?.key || '').toLowerCase();
+
+    if (key === 'bad_words') {
+      const words = this.normalizeArrayConfig(config.words);
+      const hit = words.find((word) => word && normalizedBody.includes(word));
+      return hit ? `palavra proibida: ${hit}` : '';
+    }
+
+    if (key === 'blocked_links') {
+      const domains = this.normalizeArrayConfig(config.domains);
+      const links = this.extractDomainsFromBody(normalizedBody);
+      const hit = domains.find((domain) => links.some((url) => url.includes(domain)));
+      return hit ? `link proibido: ${hit}` : '';
+    }
+
+    if (key === 'group_invites') {
+      const patterns = this.normalizeArrayConfig(config.patterns);
+      const defaultPatterns = ['t.me/joinchat', 'chat.whatsapp.com', 'discord.gg'];
+      const merged = patterns.length ? patterns : defaultPatterns;
+      const hit = merged.find((pattern) => normalizedBody.includes(pattern));
+      return hit ? `convite detectado: ${hit}` : '';
+    }
+
+    if (key === 'scam_pattern') {
+      const patterns = this.normalizeArrayConfig(config.patterns);
+      const defaultPatterns = ['garantia de lucro', 'dobrar dinheiro', 'retorno garantido'];
+      const merged = patterns.length ? patterns : defaultPatterns;
+      const hit = merged.find((pattern) => normalizedBody.includes(pattern));
+      return hit ? `padrao suspeito: ${hit}` : '';
+    }
+
+    return '';
   }
 
   recordMemberActivity(message, group) {
@@ -545,6 +808,9 @@ class CommandRouter {
     }
 
     const chatId = String(message.chat.id);
+    if (!this.isAutomationModuleEnabled(chatId, 'welcome_message', true)) {
+      return;
+    }
     const chatLabel = text(message.chat.title || group.label || chatId);
 
     if (Array.isArray(message.new_chat_members) && message.new_chat_members.length) {
@@ -577,26 +843,46 @@ class CommandRouter {
   }
 
   async applyRealtimeGuards(message, group, body) {
-    if (!this.isGroup(message.chat) || !group || !this.hasPermission(group, FEATURE_PERMISSION.security)) {
+    if (!this.isGroup(message.chat) || !group) {
       return;
     }
 
+    const canUseSecurity = this.hasPermission(group, FEATURE_PERMISSION.security);
     const chatId = String(message.chat.id);
     const userId = String(message.from.id);
     const locks = this.tokenModel.getGroupLocks(chatId);
     const isAdmin = await this.isChatAdmin(chatId, userId);
+    const snapshot = this.getAutomationSnapshot(chatId);
+    const antiSpamEnabled = this.isAutomationModuleEnabled(chatId, 'anti_spam', true);
+    const linkModerationEnabled = this.isAutomationModuleEnabled(chatId, 'link_moderation', true);
 
-    if (!isAdmin && locks.antilink && /(https?:\/\/|www\.|t\.me\/)/i.test(body)) {
+    if (
+      canUseSecurity &&
+      !isAdmin &&
+      linkModerationEnabled &&
+      locks.antilink &&
+      /(https?:\/\/|www\.|t\.me\/)/i.test(body)
+    ) {
       try {
         await this.telegramClient.deleteMessage(chatId, message.message_id);
       } catch (_error) {
         // ignore
       }
-      await this.send(chatId, `🚫 ${text(message.from.first_name)}: links bloqueados neste grupo.`);
+      await this.send(chatId, `${text(message.from.first_name)}: links bloqueados neste grupo.`);
+      await this.logModerationEvent(chatId, {
+        user_id: userId,
+        actor_id: 'auto',
+        event_type: 'guard.antilink',
+        status: 'resolved',
+        reason: 'link bloqueado',
+        details: {
+          message_id: message.message_id
+        }
+      });
       return;
     }
 
-    if (!isAdmin && locks.antiflood && this.updateFlood(chatId, userId)) {
+    if (canUseSecurity && !isAdmin && antiSpamEnabled && locks.antiflood && this.updateFlood(chatId, userId)) {
       try {
         await this.telegramClient.deleteMessage(chatId, message.message_id);
       } catch (_error) {
@@ -607,21 +893,83 @@ class CommandRouter {
       } catch (_error) {
         // ignore
       }
-      await this.send(chatId, `⏱️ ${text(message.from.first_name)} silenciado por flood (5 minutos).`);
+      await this.send(chatId, `${text(message.from.first_name)} silenciado por flood (5 minutos).`);
+      await this.logModerationEvent(chatId, {
+        user_id: userId,
+        actor_id: 'auto',
+        event_type: 'guard.antiflood',
+        status: 'resolved',
+        reason: 'flood detectado',
+        details: {
+          message_id: message.message_id,
+          duration_minutes: 5
+        }
+      });
       return;
     }
 
-    if (!isAdmin && locks.antispam && this.updateSpam(chatId, userId, body.toLowerCase())) {
+    if (canUseSecurity && !isAdmin && antiSpamEnabled && locks.antispam && this.updateSpam(chatId, userId, body.toLowerCase())) {
       try {
         await this.telegramClient.deleteMessage(chatId, message.message_id);
       } catch (_error) {
         // ignore
       }
+      await this.logModerationEvent(chatId, {
+        user_id: userId,
+        actor_id: 'auto',
+        event_type: 'guard.antispam',
+        status: 'resolved',
+        reason: 'spam repetido',
+        details: {
+          message_id: message.message_id
+        }
+      });
+    }
+
+    if (isAdmin || !this.hasPermission(group, FEATURE_PERMISSION.mod)) {
+      return;
+    }
+
+    const username = text(message.from.username || '').toLowerCase();
+    if (this.tokenModel.isUserInStrikeWhitelist(chatId, userId, username)) {
+      return;
+    }
+
+    const enabledTriggers = snapshot.triggers.filter((item) => item.enabled);
+    if (!enabledTriggers.length) {
+      return;
+    }
+
+    let deletedForStrike = false;
+    for (const trigger of enabledTriggers) {
+      const reason = this.detectTriggerMatch(trigger, body);
+      if (!reason) {
+        continue;
+      }
+
+      if (!deletedForStrike) {
+        try {
+          await this.telegramClient.deleteMessage(chatId, message.message_id);
+          deletedForStrike = true;
+        } catch (_error) {
+          // ignore
+        }
+      }
+
+      await this.applyStrike(chatId, group, message.from, {
+        key: trigger.key,
+        reason,
+        strikePoints: trigger.strike_points
+      });
     }
   }
 
   async applyFilters(message, group, body) {
     if (!this.isGroup(message.chat) || !group || !this.hasPermission(group, FEATURE_PERMISSION.adv)) {
+      return;
+    }
+
+    if (!this.isAutomationModuleEnabled(String(message.chat.id), 'auto_reply', true)) {
       return;
     }
 
@@ -829,18 +1177,39 @@ class CommandRouter {
     if (key === 'mod.ban') {
       await this.telegramClient.banUser(ctx.chatId, Number(target.id), { revoke_messages: true });
       await this.reply(ctx, `🚫 Usuario banido: ${target.label}`);
+      await this.logModerationEvent(ctx.chatId, {
+        user_id: target.id,
+        actor_id: ctx.userId,
+        event_type: 'command.ban',
+        status: 'resolved',
+        reason: text(ctx.args.slice(1).join(' ')) || 'ban manual'
+      });
       return;
     }
 
     if (key === 'mod.unban') {
       await this.telegramClient.unbanUser(ctx.chatId, Number(target.id), { only_if_banned: true });
       await this.reply(ctx, `✅ Usuario desbanido: ${target.label}`);
+      await this.logModerationEvent(ctx.chatId, {
+        user_id: target.id,
+        actor_id: ctx.userId,
+        event_type: 'command.unban',
+        status: 'resolved',
+        reason: 'desbanimento manual'
+      });
       return;
     }
 
     if (key === 'mod.kick') {
       await this.telegramClient.kickUser(ctx.chatId, Number(target.id));
       await this.reply(ctx, `👢 Usuario removido: ${target.label}`);
+      await this.logModerationEvent(ctx.chatId, {
+        user_id: target.id,
+        actor_id: ctx.userId,
+        event_type: 'command.kick',
+        status: 'resolved',
+        reason: 'kick manual'
+      });
       return;
     }
 
@@ -848,12 +1217,29 @@ class CommandRouter {
       const minutes = Math.max(1, Math.min(Number(ctx.args[1] || ctx.args[0]) || 10, 10080));
       await this.telegramClient.muteUser(ctx.chatId, Number(target.id), minutes);
       await this.reply(ctx, `🔇 Usuario silenciado por ${minutes} minuto(s).`);
+      await this.logModerationEvent(ctx.chatId, {
+        user_id: target.id,
+        actor_id: ctx.userId,
+        event_type: 'command.mute',
+        status: 'resolved',
+        reason: `mute manual (${minutes} min)`,
+        details: {
+          duration_minutes: minutes
+        }
+      });
       return;
     }
 
     if (key === 'mod.unmute') {
       await this.telegramClient.unmuteUser(ctx.chatId, Number(target.id));
       await this.reply(ctx, '🔊 Mute removido.');
+      await this.logModerationEvent(ctx.chatId, {
+        user_id: target.id,
+        actor_id: ctx.userId,
+        event_type: 'command.unmute',
+        status: 'resolved',
+        reason: 'unmute manual'
+      });
       return;
     }
 
@@ -866,6 +1252,16 @@ class CommandRouter {
         reason,
         moderatorId: ctx.userId
       });
+      await this.logModerationEvent(ctx.chatId, {
+        user_id: target.id,
+        actor_id: ctx.userId,
+        event_type: 'command.warn',
+        status: 'strike',
+        reason,
+        details: {
+          total
+        }
+      });
       const limit = Math.max(2, Number(process.env.WARN_AUTOMUTE_AT || 3));
       if (total >= limit) {
         try {
@@ -874,6 +1270,17 @@ class CommandRouter {
           // ignore
         }
         await this.reply(ctx, `⚠️ Warn ${total}/${limit}. Usuario silenciado por 60 minutos.`);
+        await this.logModerationEvent(ctx.chatId, {
+          user_id: target.id,
+          actor_id: ctx.userId,
+          event_type: 'punishment.mute',
+          status: 'resolved',
+          reason: 'automute por warns',
+          details: {
+            total,
+            duration_minutes: 60
+          }
+        });
       } else {
         await this.reply(ctx, `⚠️ Warn aplicado. Total: ${total}`);
       }
@@ -887,6 +1294,13 @@ class CommandRouter {
         return;
       }
       await this.reply(ctx, `✅ Warn removido. Restante: ${this.tokenModel.getWarningCount(ctx.chatId, target.id)}`);
+      await this.logModerationEvent(ctx.chatId, {
+        user_id: target.id,
+        actor_id: ctx.userId,
+        event_type: 'command.unwarn',
+        status: 'resolved',
+        reason: 'warn removido manualmente'
+      });
       return;
     }
 
@@ -900,6 +1314,13 @@ class CommandRouter {
         .listWarnings(ctx.chatId, warnTarget.id, 5)
         .map((item, index) => `${index + 1}. ${item.reason} (${item.created_at})`);
       await this.reply(ctx, `⚠️ Warns: ${count}\n${details.join('\n') || 'sem detalhes'}`);
+      await this.logModerationEvent(ctx.chatId, {
+        user_id: warnTarget.id,
+        actor_id: ctx.userId,
+        event_type: 'command.warns',
+        status: 'resolved',
+        reason: 'consulta de warns'
+      });
       return;
     }
 

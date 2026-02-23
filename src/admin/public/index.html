@@ -55,6 +55,9 @@
           <button class="side-link" type="button" data-nav-view="members">Membros</button>
           <button class="side-link" type="button" data-nav-view="commands">Comandos</button>
           <button class="side-link" type="button" data-nav-view="schedules">Agendamentos</button>
+          <button class="side-link" type="button" data-nav-view="automation">Automacoes & Moderacao</button>
+          <button class="side-link" type="button" data-nav-view="moderation">Moderacao</button>
+          <button class="side-link" type="button" data-nav-view="broadcast">Broadcast</button>
           <button class="side-link" type="button" data-nav-view="tokens">Tokens</button>
           <button class="side-link" type="button" data-nav-view="activity">Atividade</button>
           <button class="side-link" type="button" data-nav-view="settings">Configuracoes</button>
@@ -279,6 +282,186 @@
                     </tr>
                   </thead>
                   <tbody id="schedulesTbody"></tbody>
+                </table>
+              </div>
+            </section>
+          </section>
+
+          <section class="view" data-view="automation">
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Automacoes & Moderacao</h2>
+                <span class="panel-hint">Sistema de strikes, punicoes e respostas automaticas</span>
+              </div>
+
+              <div id="automationTabs" class="segmented-tabs">
+                <button class="segmented-tab active" type="button" data-automation-tab="modules">Automacoes</button>
+                <button class="segmented-tab" type="button" data-automation-tab="triggers">Gatilhos de Strike</button>
+                <button class="segmented-tab" type="button" data-automation-tab="ladder">Escada de Punicao</button>
+                <button class="segmented-tab" type="button" data-automation-tab="whitelist">Whitelist</button>
+                <button class="segmented-tab" type="button" data-automation-tab="logs">Logs de Moderacao</button>
+              </div>
+
+              <div class="automation-tab-pane active" data-automation-pane="modules">
+                <div id="automationModulesList" class="stack-list"></div>
+              </div>
+
+              <div class="automation-tab-pane" data-automation-pane="triggers">
+                <div id="strikeTriggersList" class="stack-list"></div>
+              </div>
+
+              <div class="automation-tab-pane" data-automation-pane="ladder">
+                <div id="strikeLadderList" class="stack-list"></div>
+              </div>
+
+              <div class="automation-tab-pane" data-automation-pane="whitelist">
+                <form id="whitelistForm" class="form-grid form-grid-three">
+                  <label>
+                    <span>Tipo</span>
+                    <select id="whitelistTypeInput" name="target_type" required>
+                      <option value="user_id">User ID</option>
+                      <option value="username">Username</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Valor</span>
+                    <input id="whitelistValueInput" name="target_value" type="text" placeholder="@usuario ou 123456" required />
+                  </label>
+                  <label>
+                    <span>Nota</span>
+                    <input id="whitelistNoteInput" name="note" type="text" placeholder="Opcional" />
+                  </label>
+                  <button class="btn btn-primary" type="submit">Adicionar na Whitelist</button>
+                </form>
+
+                <div id="whitelistList" class="stack-list"></div>
+              </div>
+
+              <div class="automation-tab-pane" data-automation-pane="logs">
+                <div class="filter-row filter-row-wide">
+                  <select id="moderationLogTypeFilter">
+                    <option value="">Todos os tipos</option>
+                    <option value="guard.antilink">Guard: antilink</option>
+                    <option value="guard.antiflood">Guard: antiflood</option>
+                    <option value="guard.antispam">Guard: antispam</option>
+                    <option value="trigger.bad_words">Trigger: bad_words</option>
+                    <option value="trigger.blocked_links">Trigger: blocked_links</option>
+                    <option value="punishment.warn">Punicao: warn</option>
+                    <option value="punishment.mute">Punicao: mute</option>
+                    <option value="punishment.kick">Punicao: kick</option>
+                    <option value="punishment.ban">Punicao: ban</option>
+                  </select>
+                  <select id="moderationLogStatusFilter">
+                    <option value="">Todos os status</option>
+                    <option value="received">Recebido</option>
+                    <option value="resolved">Resolvido</option>
+                    <option value="dismissed">Dismissed</option>
+                    <option value="strike">Strike</option>
+                  </select>
+                  <button id="refreshAutomationLogsBtn" class="btn btn-soft" type="button">Atualizar Logs</button>
+                </div>
+
+                <div id="moderationLogsList" class="stack-list"></div>
+              </div>
+            </section>
+          </section>
+
+          <section class="view" data-view="moderation">
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Moderacao</h2>
+                <span class="panel-hint">Gerencie denuncias e banimentos</span>
+              </div>
+
+              <div class="stats-grid">
+                <article class="metric-card">
+                  <p class="metric-label">Pendentes</p>
+                  <h3 id="modPending">0</h3>
+                </article>
+                <article class="metric-card">
+                  <p class="metric-label">Banidos</p>
+                  <h3 id="modBans">0</h3>
+                </article>
+                <article class="metric-card">
+                  <p class="metric-label">Resolvidos</p>
+                  <h3 id="modResolved">0</h3>
+                </article>
+                <article class="metric-card">
+                  <p class="metric-label">Strikes</p>
+                  <h3 id="modStrikes">0</h3>
+                </article>
+              </div>
+
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Horario</th>
+                      <th>Tipo</th>
+                      <th>User</th>
+                      <th>Status</th>
+                      <th>Motivo</th>
+                    </tr>
+                  </thead>
+                  <tbody id="moderationTableBody"></tbody>
+                </table>
+              </div>
+            </section>
+          </section>
+
+          <section class="view" data-view="broadcast">
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Broadcast</h2>
+                <span class="panel-hint">Envie comunicados em massa para grupos</span>
+              </div>
+
+              <form id="broadcastForm" class="form-grid">
+                <label>
+                  <span>Titulo (opcional)</span>
+                  <input id="broadcastTitleInput" name="title" type="text" placeholder="Comunicado iMAVY" />
+                </label>
+
+                <label class="field-span-all">
+                  <span>Mensagem</span>
+                  <textarea
+                    id="broadcastContentInput"
+                    name="content"
+                    rows="4"
+                    placeholder="Digite sua mensagem de broadcast..."
+                    required
+                  ></textarea>
+                </label>
+
+                <label class="field-span-all">
+                  <span>Imagem (URL, opcional)</span>
+                  <div class="upload-inline">
+                    <input id="broadcastMediaUrlInput" name="media_url" type="url" placeholder="https://cdn.seudominio.com/imagem.jpg" />
+                    <button id="broadcastMediaUploadBtn" class="btn btn-soft" type="button">Upload</button>
+                  </div>
+                </label>
+                <input id="broadcastMediaFileInput" type="file" accept="image/*" hidden />
+
+                <div class="field-span-all">
+                  <span class="group-picker-title">Selecionar Grupos</span>
+                  <div id="broadcastGroupChecklist" class="group-checklist"></div>
+                </div>
+
+                <button class="btn btn-primary" type="submit">Enviar Broadcast</button>
+              </form>
+
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Titulo</th>
+                      <th>Status</th>
+                      <th>Enviados</th>
+                      <th>Falhas</th>
+                      <th>Criado em</th>
+                    </tr>
+                  </thead>
+                  <tbody id="broadcastsTbody"></tbody>
                 </table>
               </div>
             </section>

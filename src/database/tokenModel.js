@@ -16,6 +16,122 @@ const DEFAULT_GROUP_PERMISSIONS = [
 ];
 const DEFAULT_GROUP_PERMISSIONS_JSON = JSON.stringify(DEFAULT_GROUP_PERMISSIONS);
 const LOCK_KEYS = ['antispam', 'antilink', 'antiflood', 'captcha', 'antiraid'];
+const AUTOMATION_MODULE_DEFS = [
+  {
+    key: 'welcome_message',
+    label: 'Mensagem de Boas-vindas',
+    description: 'Enviar mensagem quando um novo membro entrar',
+    defaultEnabled: 1,
+    defaultConfig: {}
+  },
+  {
+    key: 'auto_reply',
+    label: 'Resposta Automatica',
+    description: 'Responder automaticamente palavras-chave configuradas',
+    defaultEnabled: 0,
+    defaultConfig: {}
+  },
+  {
+    key: 'anti_spam',
+    label: 'Anti-Spam',
+    description: 'Remover mensagens de spam em tempo real',
+    defaultEnabled: 0,
+    defaultConfig: {}
+  },
+  {
+    key: 'link_moderation',
+    label: 'Moderacao de Links',
+    description: 'Bloquear ou aprovar links enviados no grupo',
+    defaultEnabled: 0,
+    defaultConfig: {}
+  },
+  {
+    key: 'rss_news',
+    label: 'Envio de RSS/Noticias',
+    description: 'Enviar atualizacoes automaticas de feeds',
+    defaultEnabled: 0,
+    defaultConfig: {
+      feed_url: '',
+      interval_minutes: 30
+    }
+  }
+];
+
+const STRIKE_TRIGGER_DEFS = [
+  {
+    key: 'bad_words',
+    label: 'Palavras Proibidas',
+    description: 'Aplica strike para palavras configuradas',
+    defaultEnabled: 0,
+    defaultStrikePoints: 1,
+    defaultConfig: {
+      words: []
+    }
+  },
+  {
+    key: 'blocked_links',
+    label: 'Links Proibidos',
+    description: 'Aplica strike para dominios bloqueados',
+    defaultEnabled: 0,
+    defaultStrikePoints: 1,
+    defaultConfig: {
+      domains: []
+    }
+  },
+  {
+    key: 'group_invites',
+    label: 'Convites de Grupo',
+    description: 'Aplica strike para links de convite',
+    defaultEnabled: 0,
+    defaultStrikePoints: 1,
+    defaultConfig: {
+      patterns: ['t.me/joinchat', 'chat.whatsapp.com', 'discord.gg']
+    }
+  },
+  {
+    key: 'scam_pattern',
+    label: 'Padrao de Golpe',
+    description: 'Detecta padroes comuns de scam',
+    defaultEnabled: 0,
+    defaultStrikePoints: 1,
+    defaultConfig: {
+      patterns: ['garantia de lucro', 'dobrar dinheiro', 'pix agora', 'retorno garantido', 'airdrop privado']
+    }
+  }
+];
+
+const STRIKE_LADDER_DEFAULTS = [
+  {
+    step: 1,
+    action: 'warn',
+    duration_minutes: 0,
+    message_template: '@{name}, voce recebeu seu 1o strike. Comportamento: {reason}',
+    enabled: 1
+  },
+  {
+    step: 2,
+    action: 'warn',
+    duration_minutes: 0,
+    message_template: '@{name}, voce recebeu seu 2o strike. Comportamento: {reason}',
+    enabled: 1
+  },
+  {
+    step: 3,
+    action: 'mute',
+    duration_minutes: 60,
+    message_template: '@{name}, 3o strike detectado. Usuario silenciado por {duration} minutos. Motivo: {reason}',
+    enabled: 1
+  },
+  {
+    step: 4,
+    action: 'kick',
+    duration_minutes: 0,
+    message_template: '@{name}, 4o strike. Usuario removido do grupo. Motivo: {reason}',
+    enabled: 1
+  }
+];
+
+const ALLOWED_STRIKE_ACTIONS = new Set(['none', 'warn', 'mute', 'kick', 'ban']);
 
 const DEFAULT_COMMAND_ITEMS = [
   {
@@ -534,6 +650,73 @@ class TokenModel {
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
 
+      CREATE TABLE IF NOT EXISTS automation_modules (
+        chat_id TEXT NOT NULL,
+        module_key TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 0,
+        config TEXT NOT NULL DEFAULT '{}',
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY(chat_id, module_key)
+      );
+
+      CREATE TABLE IF NOT EXISTS strike_triggers (
+        chat_id TEXT NOT NULL,
+        trigger_key TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 0,
+        strike_points INTEGER NOT NULL DEFAULT 1,
+        config TEXT NOT NULL DEFAULT '{}',
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY(chat_id, trigger_key)
+      );
+
+      CREATE TABLE IF NOT EXISTS strike_ladder (
+        chat_id TEXT NOT NULL,
+        step INTEGER NOT NULL,
+        action TEXT NOT NULL DEFAULT 'warn',
+        duration_minutes INTEGER NOT NULL DEFAULT 0,
+        message_template TEXT NOT NULL DEFAULT '',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY(chat_id, step)
+      );
+
+      CREATE TABLE IF NOT EXISTS strike_whitelist (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id TEXT NOT NULL,
+        target_type TEXT NOT NULL,
+        target_value TEXT NOT NULL,
+        note TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(chat_id, target_type, target_value)
+      );
+
+      CREATE TABLE IF NOT EXISTS moderation_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id TEXT NOT NULL,
+        user_id TEXT NOT NULL DEFAULT '',
+        actor_id TEXT NOT NULL DEFAULT '',
+        event_type TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'received',
+        reason TEXT NOT NULL DEFAULT '',
+        details TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE TABLE IF NOT EXISTS broadcast_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL DEFAULT '',
+        content TEXT NOT NULL,
+        media_url TEXT,
+        group_ids TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'queued',
+        sent_count INTEGER NOT NULL DEFAULT 0,
+        fail_count INTEGER NOT NULL DEFAULT 0,
+        created_by TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
       CREATE INDEX IF NOT EXISTS idx_tokens_network ON tokens(network);
       CREATE INDEX IF NOT EXISTS idx_tokens_enabled ON tokens(enabled);
       CREATE INDEX IF NOT EXISTS idx_transactions_hash ON transactions(hash);
@@ -547,6 +730,13 @@ class TokenModel {
       CREATE INDEX IF NOT EXISTS idx_commands_category ON command_items(category);
       CREATE INDEX IF NOT EXISTS idx_commands_enabled ON command_items(enabled);
       CREATE INDEX IF NOT EXISTS idx_schedules_status_sendat ON schedules(status, send_at);
+      CREATE INDEX IF NOT EXISTS idx_automation_modules_chat ON automation_modules(chat_id);
+      CREATE INDEX IF NOT EXISTS idx_strike_triggers_chat ON strike_triggers(chat_id);
+      CREATE INDEX IF NOT EXISTS idx_strike_ladder_chat ON strike_ladder(chat_id, step);
+      CREATE INDEX IF NOT EXISTS idx_strike_whitelist_chat ON strike_whitelist(chat_id);
+      CREATE INDEX IF NOT EXISTS idx_moderation_logs_chat ON moderation_logs(chat_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_moderation_logs_type ON moderation_logs(event_type, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_broadcast_status_created ON broadcast_messages(status, created_at DESC);
     `);
 
     this.runMigrations();
@@ -1104,6 +1294,204 @@ class TokenModel {
     this.statements.deleteScheduleById = this.db.prepare(`
       DELETE FROM schedules WHERE id = ?
     `);
+
+    this.statements.upsertAutomationModule = this.db.prepare(`
+      INSERT INTO automation_modules (chat_id, module_key, enabled, config, updated_at)
+      VALUES (@chat_id, @module_key, @enabled, @config, @updated_at)
+      ON CONFLICT(chat_id, module_key)
+      DO UPDATE SET
+        enabled = excluded.enabled,
+        config = excluded.config,
+        updated_at = excluded.updated_at
+    `);
+
+    this.statements.insertAutomationModuleDefault = this.db.prepare(`
+      INSERT INTO automation_modules (chat_id, module_key, enabled, config, updated_at)
+      VALUES (@chat_id, @module_key, @enabled, @config, @updated_at)
+      ON CONFLICT(chat_id, module_key) DO NOTHING
+    `);
+
+    this.statements.selectAutomationModulesByChat = this.db.prepare(`
+      SELECT chat_id, module_key, enabled, config, updated_at
+      FROM automation_modules
+      WHERE chat_id = ?
+      ORDER BY module_key ASC
+    `);
+
+    this.statements.upsertStrikeTrigger = this.db.prepare(`
+      INSERT INTO strike_triggers (chat_id, trigger_key, enabled, strike_points, config, updated_at)
+      VALUES (@chat_id, @trigger_key, @enabled, @strike_points, @config, @updated_at)
+      ON CONFLICT(chat_id, trigger_key)
+      DO UPDATE SET
+        enabled = excluded.enabled,
+        strike_points = excluded.strike_points,
+        config = excluded.config,
+        updated_at = excluded.updated_at
+    `);
+
+    this.statements.insertStrikeTriggerDefault = this.db.prepare(`
+      INSERT INTO strike_triggers (chat_id, trigger_key, enabled, strike_points, config, updated_at)
+      VALUES (@chat_id, @trigger_key, @enabled, @strike_points, @config, @updated_at)
+      ON CONFLICT(chat_id, trigger_key) DO NOTHING
+    `);
+
+    this.statements.selectStrikeTriggersByChat = this.db.prepare(`
+      SELECT chat_id, trigger_key, enabled, strike_points, config, updated_at
+      FROM strike_triggers
+      WHERE chat_id = ?
+      ORDER BY trigger_key ASC
+    `);
+
+    this.statements.upsertStrikeLadder = this.db.prepare(`
+      INSERT INTO strike_ladder (chat_id, step, action, duration_minutes, message_template, enabled, updated_at)
+      VALUES (@chat_id, @step, @action, @duration_minutes, @message_template, @enabled, @updated_at)
+      ON CONFLICT(chat_id, step)
+      DO UPDATE SET
+        action = excluded.action,
+        duration_minutes = excluded.duration_minutes,
+        message_template = excluded.message_template,
+        enabled = excluded.enabled,
+        updated_at = excluded.updated_at
+    `);
+
+    this.statements.insertStrikeLadderDefault = this.db.prepare(`
+      INSERT INTO strike_ladder (chat_id, step, action, duration_minutes, message_template, enabled, updated_at)
+      VALUES (@chat_id, @step, @action, @duration_minutes, @message_template, @enabled, @updated_at)
+      ON CONFLICT(chat_id, step) DO NOTHING
+    `);
+
+    this.statements.selectStrikeLadderByChat = this.db.prepare(`
+      SELECT chat_id, step, action, duration_minutes, message_template, enabled, updated_at
+      FROM strike_ladder
+      WHERE chat_id = ?
+      ORDER BY step ASC
+    `);
+
+    this.statements.insertStrikeWhitelist = this.db.prepare(`
+      INSERT INTO strike_whitelist (chat_id, target_type, target_value, note, updated_at)
+      VALUES (@chat_id, @target_type, @target_value, @note, @updated_at)
+      ON CONFLICT(chat_id, target_type, target_value)
+      DO UPDATE SET
+        note = excluded.note,
+        updated_at = excluded.updated_at
+    `);
+
+    this.statements.selectStrikeWhitelistByChat = this.db.prepare(`
+      SELECT id, chat_id, target_type, target_value, note, created_at, updated_at
+      FROM strike_whitelist
+      WHERE chat_id = ?
+      ORDER BY id DESC
+    `);
+
+    this.statements.deleteStrikeWhitelistById = this.db.prepare(`
+      DELETE FROM strike_whitelist
+      WHERE id = ? AND chat_id = ?
+    `);
+
+    this.statements.selectStrikeWhitelistMatch = this.db.prepare(`
+      SELECT id
+      FROM strike_whitelist
+      WHERE chat_id = ?
+        AND (
+          (target_type = 'user_id' AND target_value = ?)
+          OR (target_type = 'username' AND target_value = ?)
+        )
+      LIMIT 1
+    `);
+
+    this.statements.insertModerationLog = this.db.prepare(`
+      INSERT INTO moderation_logs (chat_id, user_id, actor_id, event_type, status, reason, details, created_at)
+      VALUES (@chat_id, @user_id, @actor_id, @event_type, @status, @reason, @details, @created_at)
+    `);
+
+    this.statements.selectModerationLogsByChat = this.db.prepare(`
+      SELECT id, chat_id, user_id, actor_id, event_type, status, reason, details, created_at
+      FROM moderation_logs
+      WHERE chat_id = ?
+      ORDER BY id DESC
+      LIMIT ?
+    `);
+
+    this.statements.selectModerationLogsByChatAndType = this.db.prepare(`
+      SELECT id, chat_id, user_id, actor_id, event_type, status, reason, details, created_at
+      FROM moderation_logs
+      WHERE chat_id = ? AND event_type = ?
+      ORDER BY id DESC
+      LIMIT ?
+    `);
+
+    this.statements.selectModerationLogsByChatAndStatus = this.db.prepare(`
+      SELECT id, chat_id, user_id, actor_id, event_type, status, reason, details, created_at
+      FROM moderation_logs
+      WHERE chat_id = ? AND status = ?
+      ORDER BY id DESC
+      LIMIT ?
+    `);
+
+    this.statements.selectModerationLogsByChatTypeStatus = this.db.prepare(`
+      SELECT id, chat_id, user_id, actor_id, event_type, status, reason, details, created_at
+      FROM moderation_logs
+      WHERE chat_id = ? AND event_type = ? AND status = ?
+      ORDER BY id DESC
+      LIMIT ?
+    `);
+
+    this.statements.selectModerationOverviewByChat = this.db.prepare(`
+      SELECT
+        SUM(CASE WHEN status = 'received' THEN 1 ELSE 0 END) AS pending,
+        SUM(CASE WHEN status IN ('resolved', 'dismissed') THEN 1 ELSE 0 END) AS resolved,
+        SUM(CASE WHEN event_type IN ('punishment.ban', 'command.ban') THEN 1 ELSE 0 END) AS bans,
+        SUM(CASE WHEN event_type LIKE 'trigger.%' THEN 1 ELSE 0 END) AS strikes
+      FROM moderation_logs
+      WHERE chat_id = ? AND datetime(created_at) >= datetime(?)
+    `);
+
+    this.statements.insertBroadcastMessage = this.db.prepare(`
+      INSERT INTO broadcast_messages (
+        title,
+        content,
+        media_url,
+        group_ids,
+        status,
+        sent_count,
+        fail_count,
+        created_by,
+        created_at,
+        updated_at
+      )
+      VALUES (
+        @title,
+        @content,
+        @media_url,
+        @group_ids,
+        @status,
+        @sent_count,
+        @fail_count,
+        @created_by,
+        @created_at,
+        @updated_at
+      )
+    `);
+
+    this.statements.selectBroadcastMessageById = this.db.prepare(`
+      SELECT id, title, content, media_url, group_ids, status, sent_count, fail_count, created_by, created_at, updated_at
+      FROM broadcast_messages
+      WHERE id = ?
+      LIMIT 1
+    `);
+
+    this.statements.selectBroadcastMessages = this.db.prepare(`
+      SELECT id, title, content, media_url, group_ids, status, sent_count, fail_count, created_by, created_at, updated_at
+      FROM broadcast_messages
+      ORDER BY id DESC
+      LIMIT ?
+    `);
+
+    this.statements.updateBroadcastMessageStatus = this.db.prepare(`
+      UPDATE broadcast_messages
+      SET status = @status, sent_count = @sent_count, fail_count = @fail_count, updated_at = @updated_at
+      WHERE id = @id
+    `);
   }
 
   seedDefaultCommands() {
@@ -1373,9 +1761,34 @@ class TokenModel {
     };
   }
 
+  normalizeJsonObject(value, fallback = {}) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return value;
+    }
+
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed) {
+        return { ...fallback };
+      }
+
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          return parsed;
+        }
+      } catch (_error) {
+        return { ...fallback };
+      }
+    }
+
+    return { ...fallback };
+  }
+
   upsertGroup(group) {
     const payload = this.normalizeGroupPayload(group);
     this.statements.upsertGroup.run(payload);
+    this.ensureAutomationDefaults(payload.chat_id);
     return payload;
   }
 
@@ -1385,6 +1798,10 @@ class TokenModel {
       ...payload,
       id: Number(id)
     });
+
+    if (result.changes > 0) {
+      this.ensureAutomationDefaults(payload.chat_id);
+    }
 
     return result.changes > 0;
   }
@@ -1433,6 +1850,545 @@ class TokenModel {
   countGroups() {
     const row = this.statements.countGroups.get();
     return Number(row?.total || 0);
+  }
+
+  findAutomationModuleDef(moduleKey) {
+    const key = String(moduleKey || '').trim().toLowerCase();
+    return AUTOMATION_MODULE_DEFS.find((item) => item.key === key) || null;
+  }
+
+  findStrikeTriggerDef(triggerKey) {
+    const key = String(triggerKey || '').trim().toLowerCase();
+    return STRIKE_TRIGGER_DEFS.find((item) => item.key === key) || null;
+  }
+
+  ensureAutomationDefaults(chatId) {
+    const safeChatId = String(chatId || '').trim();
+    if (!safeChatId) {
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const tx = this.db.transaction(() => {
+      for (const moduleDef of AUTOMATION_MODULE_DEFS) {
+        this.statements.insertAutomationModuleDefault.run({
+          chat_id: safeChatId,
+          module_key: moduleDef.key,
+          enabled: moduleDef.defaultEnabled ? 1 : 0,
+          config: JSON.stringify(moduleDef.defaultConfig || {}),
+          updated_at: now
+        });
+      }
+
+      for (const triggerDef of STRIKE_TRIGGER_DEFS) {
+        this.statements.insertStrikeTriggerDefault.run({
+          chat_id: safeChatId,
+          trigger_key: triggerDef.key,
+          enabled: triggerDef.defaultEnabled ? 1 : 0,
+          strike_points: Math.max(1, Number(triggerDef.defaultStrikePoints) || 1),
+          config: JSON.stringify(triggerDef.defaultConfig || {}),
+          updated_at: now
+        });
+      }
+
+      for (const stepDef of STRIKE_LADDER_DEFAULTS) {
+        this.statements.insertStrikeLadderDefault.run({
+          chat_id: safeChatId,
+          step: Number(stepDef.step),
+          action: String(stepDef.action || 'warn'),
+          duration_minutes: Math.max(0, Number(stepDef.duration_minutes) || 0),
+          message_template: String(stepDef.message_template || ''),
+          enabled: stepDef.enabled ? 1 : 0,
+          updated_at: now
+        });
+      }
+    });
+
+    tx();
+  }
+
+  normalizeAutomationModuleRow(row) {
+    const def = this.findAutomationModuleDef(row?.module_key || '') || {
+      key: String(row?.module_key || ''),
+      label: String(row?.module_key || ''),
+      description: '',
+      defaultConfig: {}
+    };
+
+    return {
+      key: def.key,
+      label: def.label,
+      description: def.description,
+      enabled: row?.enabled === 1,
+      config: this.normalizeJsonObject(row?.config, def.defaultConfig || {}),
+      updated_at: row?.updated_at || null
+    };
+  }
+
+  normalizeStrikeTriggerRow(row) {
+    const def = this.findStrikeTriggerDef(row?.trigger_key || '') || {
+      key: String(row?.trigger_key || ''),
+      label: String(row?.trigger_key || ''),
+      description: '',
+      defaultConfig: {},
+      defaultStrikePoints: 1
+    };
+
+    return {
+      key: def.key,
+      label: def.label,
+      description: def.description,
+      enabled: row?.enabled === 1,
+      strike_points: Math.max(1, Number(row?.strike_points) || Number(def.defaultStrikePoints) || 1),
+      config: this.normalizeJsonObject(row?.config, def.defaultConfig || {}),
+      updated_at: row?.updated_at || null
+    };
+  }
+
+  normalizeStrikeLadderRow(row) {
+    return {
+      step: Math.max(1, Number(row?.step) || 1),
+      action: String(row?.action || 'warn').toLowerCase(),
+      duration_minutes: Math.max(0, Number(row?.duration_minutes) || 0),
+      message_template: String(row?.message_template || ''),
+      enabled: row?.enabled === 1,
+      updated_at: row?.updated_at || null
+    };
+  }
+
+  getGroupAutomationModules(chatId) {
+    const safeChatId = String(chatId || '').trim();
+    if (!safeChatId) {
+      return [];
+    }
+
+    this.ensureAutomationDefaults(safeChatId);
+    const rows = this.statements.selectAutomationModulesByChat.all(safeChatId);
+    const map = new Map(rows.map((row) => [String(row.module_key || ''), row]));
+
+    return AUTOMATION_MODULE_DEFS.map((def) => {
+      const row = map.get(def.key) || {
+        module_key: def.key,
+        enabled: def.defaultEnabled ? 1 : 0,
+        config: JSON.stringify(def.defaultConfig || {}),
+        updated_at: null
+      };
+      return this.normalizeAutomationModuleRow(row);
+    });
+  }
+
+  setGroupAutomationModule(chatId, moduleKey, changes = {}) {
+    const safeChatId = String(chatId || '').trim();
+    const def = this.findAutomationModuleDef(moduleKey);
+    if (!safeChatId || !def) {
+      throw new Error('invalid automation module');
+    }
+
+    const current = this.getGroupAutomationModules(safeChatId).find((item) => item.key === def.key) || {
+      enabled: Boolean(def.defaultEnabled),
+      config: { ...def.defaultConfig }
+    };
+
+    const enabled =
+      changes.enabled === undefined ? Boolean(current.enabled) : changes.enabled === true || changes.enabled === 1;
+    const config =
+      changes.config === undefined
+        ? this.normalizeJsonObject(current.config, def.defaultConfig || {})
+        : this.normalizeJsonObject(changes.config, def.defaultConfig || {});
+
+    this.statements.upsertAutomationModule.run({
+      chat_id: safeChatId,
+      module_key: def.key,
+      enabled: enabled ? 1 : 0,
+      config: JSON.stringify(config),
+      updated_at: new Date().toISOString()
+    });
+
+    return this.getGroupAutomationModules(safeChatId).find((item) => item.key === def.key) || null;
+  }
+
+  setGroupAutomationModulesBulk(chatId, modules = []) {
+    const safeChatId = String(chatId || '').trim();
+    if (!safeChatId) {
+      return [];
+    }
+
+    const list = Array.isArray(modules) ? modules : [];
+    list.forEach((item) => {
+      if (!item || !item.key) {
+        return;
+      }
+      this.setGroupAutomationModule(safeChatId, item.key, {
+        enabled: item.enabled,
+        config: item.config
+      });
+    });
+
+    return this.getGroupAutomationModules(safeChatId);
+  }
+
+  getGroupStrikeTriggers(chatId) {
+    const safeChatId = String(chatId || '').trim();
+    if (!safeChatId) {
+      return [];
+    }
+
+    this.ensureAutomationDefaults(safeChatId);
+    const rows = this.statements.selectStrikeTriggersByChat.all(safeChatId);
+    const map = new Map(rows.map((row) => [String(row.trigger_key || ''), row]));
+
+    return STRIKE_TRIGGER_DEFS.map((def) => {
+      const row = map.get(def.key) || {
+        trigger_key: def.key,
+        enabled: def.defaultEnabled ? 1 : 0,
+        strike_points: Math.max(1, Number(def.defaultStrikePoints) || 1),
+        config: JSON.stringify(def.defaultConfig || {}),
+        updated_at: null
+      };
+      return this.normalizeStrikeTriggerRow(row);
+    });
+  }
+
+  setGroupStrikeTrigger(chatId, triggerKey, changes = {}) {
+    const safeChatId = String(chatId || '').trim();
+    const def = this.findStrikeTriggerDef(triggerKey);
+    if (!safeChatId || !def) {
+      throw new Error('invalid strike trigger');
+    }
+
+    const current = this.getGroupStrikeTriggers(safeChatId).find((item) => item.key === def.key) || {
+      enabled: Boolean(def.defaultEnabled),
+      strike_points: Math.max(1, Number(def.defaultStrikePoints) || 1),
+      config: { ...def.defaultConfig }
+    };
+
+    const enabled =
+      changes.enabled === undefined ? Boolean(current.enabled) : changes.enabled === true || changes.enabled === 1;
+    const strikePoints = Math.max(
+      1,
+      Number(changes.strike_points === undefined ? current.strike_points : changes.strike_points) || 1
+    );
+    const config =
+      changes.config === undefined
+        ? this.normalizeJsonObject(current.config, def.defaultConfig || {})
+        : this.normalizeJsonObject(changes.config, def.defaultConfig || {});
+
+    this.statements.upsertStrikeTrigger.run({
+      chat_id: safeChatId,
+      trigger_key: def.key,
+      enabled: enabled ? 1 : 0,
+      strike_points: strikePoints,
+      config: JSON.stringify(config),
+      updated_at: new Date().toISOString()
+    });
+
+    return this.getGroupStrikeTriggers(safeChatId).find((item) => item.key === def.key) || null;
+  }
+
+  setGroupStrikeTriggersBulk(chatId, triggers = []) {
+    const safeChatId = String(chatId || '').trim();
+    if (!safeChatId) {
+      return [];
+    }
+
+    const list = Array.isArray(triggers) ? triggers : [];
+    list.forEach((item) => {
+      if (!item || !item.key) {
+        return;
+      }
+      this.setGroupStrikeTrigger(safeChatId, item.key, {
+        enabled: item.enabled,
+        strike_points: item.strike_points,
+        config: item.config
+      });
+    });
+
+    return this.getGroupStrikeTriggers(safeChatId);
+  }
+
+  getGroupStrikeLadder(chatId) {
+    const safeChatId = String(chatId || '').trim();
+    if (!safeChatId) {
+      return [];
+    }
+
+    this.ensureAutomationDefaults(safeChatId);
+    const rows = this.statements.selectStrikeLadderByChat.all(safeChatId);
+    const map = new Map(rows.map((row) => [Number(row.step), row]));
+
+    return STRIKE_LADDER_DEFAULTS.map((def) => {
+      const row = map.get(Number(def.step)) || {
+        step: def.step,
+        action: def.action,
+        duration_minutes: def.duration_minutes,
+        message_template: def.message_template,
+        enabled: def.enabled ? 1 : 0,
+        updated_at: null
+      };
+      return this.normalizeStrikeLadderRow(row);
+    });
+  }
+
+  setGroupStrikeLadderItem(chatId, item = {}) {
+    const safeChatId = String(chatId || '').trim();
+    const step = Math.max(1, Number(item.step) || 0);
+    if (!safeChatId || !step) {
+      throw new Error('invalid strike ladder item');
+    }
+
+    const current = this.getGroupStrikeLadder(safeChatId).find((row) => Number(row.step) === step) || {
+      step,
+      action: 'warn',
+      duration_minutes: 0,
+      message_template: '',
+      enabled: true
+    };
+
+    const action = String(item.action || current.action || 'warn').trim().toLowerCase();
+    if (!ALLOWED_STRIKE_ACTIONS.has(action)) {
+      throw new Error('invalid strike ladder action');
+    }
+
+    const payload = {
+      chat_id: safeChatId,
+      step,
+      action,
+      duration_minutes: Math.max(0, Number(item.duration_minutes ?? current.duration_minutes) || 0),
+      message_template: String(item.message_template ?? current.message_template ?? '').trim(),
+      enabled: item.enabled === undefined ? (current.enabled ? 1 : 0) : item.enabled ? 1 : 0,
+      updated_at: new Date().toISOString()
+    };
+
+    this.statements.upsertStrikeLadder.run(payload);
+    return this.getGroupStrikeLadder(safeChatId).find((row) => Number(row.step) === step) || null;
+  }
+
+  setGroupStrikeLadderBulk(chatId, ladderItems = []) {
+    const safeChatId = String(chatId || '').trim();
+    if (!safeChatId) {
+      return [];
+    }
+
+    const list = Array.isArray(ladderItems) ? ladderItems : [];
+    list.forEach((item) => {
+      if (!item || item.step === undefined) {
+        return;
+      }
+      this.setGroupStrikeLadderItem(safeChatId, item);
+    });
+
+    return this.getGroupStrikeLadder(safeChatId);
+  }
+
+  normalizeWhitelistTargetType(value) {
+    const type = String(value || '').trim().toLowerCase();
+    if (type === 'user_id' || type === 'userid' || type === 'id') {
+      return 'user_id';
+    }
+    if (type === 'username' || type === 'user' || type === 'tag') {
+      return 'username';
+    }
+    throw new Error('invalid whitelist target_type');
+  }
+
+  normalizeWhitelistTargetValue(targetType, value) {
+    const raw = String(value || '').trim();
+    if (!raw) {
+      throw new Error('whitelist target_value is required');
+    }
+
+    if (targetType === 'user_id') {
+      return raw;
+    }
+
+    return raw.replace(/^@/, '').toLowerCase();
+  }
+
+  listGroupStrikeWhitelist(chatId) {
+    const safeChatId = String(chatId || '').trim();
+    if (!safeChatId) {
+      return [];
+    }
+    return this.statements.selectStrikeWhitelistByChat.all(safeChatId);
+  }
+
+  addGroupStrikeWhitelist(chatId, input = {}) {
+    const safeChatId = String(chatId || '').trim();
+    if (!safeChatId) {
+      throw new Error('invalid chat id');
+    }
+
+    const targetType = this.normalizeWhitelistTargetType(input.target_type || input.targetType || '');
+    const targetValue = this.normalizeWhitelistTargetValue(targetType, input.target_value || input.targetValue || '');
+    const note = String(input.note || '').trim();
+
+    this.statements.insertStrikeWhitelist.run({
+      chat_id: safeChatId,
+      target_type: targetType,
+      target_value: targetValue,
+      note,
+      updated_at: new Date().toISOString()
+    });
+
+    return this.listGroupStrikeWhitelist(safeChatId);
+  }
+
+  removeGroupStrikeWhitelist(chatId, id) {
+    const safeChatId = String(chatId || '').trim();
+    const result = this.statements.deleteStrikeWhitelistById.run(Number(id), safeChatId);
+    return result.changes > 0;
+  }
+
+  isUserInStrikeWhitelist(chatId, userId, username = '') {
+    const safeChatId = String(chatId || '').trim();
+    if (!safeChatId) {
+      return false;
+    }
+
+    const safeUserId = String(userId || '').trim();
+    const safeUsername = String(username || '')
+      .replace(/^@/, '')
+      .trim()
+      .toLowerCase();
+
+    const row = this.statements.selectStrikeWhitelistMatch.get(safeChatId, safeUserId, safeUsername);
+    return Boolean(row);
+  }
+
+  normalizeModerationLogRow(row) {
+    if (!row) {
+      return null;
+    }
+    return {
+      ...row,
+      details: this.normalizeJsonObject(row.details, {})
+    };
+  }
+
+  addModerationLog(log = {}) {
+    const payload = {
+      chat_id: String(log.chat_id || '').trim(),
+      user_id: String(log.user_id || '').trim(),
+      actor_id: String(log.actor_id || '').trim(),
+      event_type: String(log.event_type || '').trim().toLowerCase() || 'unknown',
+      status: String(log.status || 'received').trim().toLowerCase(),
+      reason: String(log.reason || '').trim(),
+      details: JSON.stringify(this.normalizeJsonObject(log.details, {})),
+      created_at: log.created_at ? new Date(log.created_at).toISOString() : new Date().toISOString()
+    };
+
+    if (!payload.chat_id) {
+      throw new Error('moderation log chat_id is required');
+    }
+
+    this.statements.insertModerationLog.run(payload);
+    return payload;
+  }
+
+  listModerationLogs(chatId, { limit = 150, eventType = '', status = '' } = {}) {
+    const safeChatId = String(chatId || '').trim();
+    if (!safeChatId) {
+      return [];
+    }
+
+    const safeLimit = Math.max(1, Math.min(Number(limit) || 150, 1000));
+    const safeType = String(eventType || '').trim().toLowerCase();
+    const safeStatus = String(status || '').trim().toLowerCase();
+    let rows = [];
+
+    if (safeType && safeStatus) {
+      rows = this.statements.selectModerationLogsByChatTypeStatus.all(safeChatId, safeType, safeStatus, safeLimit);
+    } else if (safeType) {
+      rows = this.statements.selectModerationLogsByChatAndType.all(safeChatId, safeType, safeLimit);
+    } else if (safeStatus) {
+      rows = this.statements.selectModerationLogsByChatAndStatus.all(safeChatId, safeStatus, safeLimit);
+    } else {
+      rows = this.statements.selectModerationLogsByChat.all(safeChatId, safeLimit);
+    }
+
+    return rows.map((row) => this.normalizeModerationLogRow(row)).filter(Boolean);
+  }
+
+  getModerationOverview(chatId, { days = 30 } = {}) {
+    const safeChatId = String(chatId || '').trim();
+    if (!safeChatId) {
+      return {
+        pending: 0,
+        resolved: 0,
+        bans: 0,
+        strikes: 0
+      };
+    }
+
+    const safeDays = Math.max(1, Math.min(Number(days) || 30, 365));
+    const cutoff = new Date(Date.now() - safeDays * 24 * 60 * 60 * 1000).toISOString();
+    const row = this.statements.selectModerationOverviewByChat.get(safeChatId, cutoff);
+
+    return {
+      pending: Number(row?.pending || 0),
+      resolved: Number(row?.resolved || 0),
+      bans: Number(row?.bans || 0),
+      strikes: Number(row?.strikes || 0)
+    };
+  }
+
+  normalizeBroadcastPayload(input = {}) {
+    const content = String(input.content || '').trim();
+    if (!content) {
+      throw new Error('broadcast content is required');
+    }
+
+    const groupIds = this.parseGroupIds(input.group_ids || input.groupIds || input.groups || []);
+    if (!groupIds.length) {
+      throw new Error('broadcast requires at least one group');
+    }
+
+    return {
+      title: String(input.title || '').trim(),
+      content,
+      media_url: this.normalizeMediaUrl(input.media_url || input.mediaUrl || '', {
+        fieldName: 'broadcast media_url'
+      }),
+      group_ids: groupIds.join(','),
+      status: String(input.status || 'queued').trim().toLowerCase() || 'queued',
+      sent_count: Math.max(0, Number(input.sent_count) || 0),
+      fail_count: Math.max(0, Number(input.fail_count) || 0),
+      created_by: String(input.created_by || input.createdBy || '').trim(),
+      created_at: input.created_at ? new Date(input.created_at).toISOString() : new Date().toISOString(),
+      updated_at: input.updated_at ? new Date(input.updated_at).toISOString() : new Date().toISOString()
+    };
+  }
+
+  createBroadcastMessage(input = {}) {
+    const payload = this.normalizeBroadcastPayload(input);
+    const result = this.statements.insertBroadcastMessage.run(payload);
+    return this.getBroadcastMessageById(result.lastInsertRowid);
+  }
+
+  getBroadcastMessageById(id) {
+    return this.statements.selectBroadcastMessageById.get(Number(id)) || null;
+  }
+
+  listBroadcastMessages(limit = 100) {
+    const safeLimit = Math.max(1, Math.min(Number(limit) || 100, 1000));
+    return this.statements.selectBroadcastMessages.all(safeLimit);
+  }
+
+  setBroadcastMessageStatus(id, { status, sent_count, fail_count } = {}) {
+    const current = this.getBroadcastMessageById(id);
+    if (!current) {
+      return null;
+    }
+
+    this.statements.updateBroadcastMessageStatus.run({
+      id: Number(id),
+      status: String(status || current.status || 'queued').trim().toLowerCase(),
+      sent_count: Math.max(0, Number(sent_count === undefined ? current.sent_count : sent_count) || 0),
+      fail_count: Math.max(0, Number(fail_count === undefined ? current.fail_count : fail_count) || 0),
+      updated_at: new Date().toISOString()
+    });
+
+    return this.getBroadcastMessageById(id);
   }
 
   normalizeGroupLocksRow(row, chatId = '') {
