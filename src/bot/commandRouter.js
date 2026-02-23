@@ -95,24 +95,30 @@ const BALL_8 = ['Com certeza.', 'Sem duvidas.', 'Sinais dizem que sim.', 'Melhor
 const COIN = ['cara', 'coroa'];
 const MENU_BUTTON_LIMIT = 10;
 const MENU_FALLBACK_TEXT = 'Menu rapido: /start /help /settings /alerts /tokens /ping';
-const TELEGRAM_MENU_PRESET = [
-  'core.start',
-  'core.help',
-  'core.menu',
-  'alerts.alerts',
-  'alerts.tokens',
-  'core.settings',
-  'core.ping'
+const MENU_SHORTCUT_ROWS = [
+  [
+    { label: '📊 Alertas', command: '/alerts' },
+    { label: '🪙 Tokens', command: '/tokens' }
+  ],
+  [
+    { label: '⚙️ Configuracoes', command: '/settings' },
+    { label: '🤖 Ajuda', command: '/help' }
+  ],
+  [
+    { label: '📌 Regras', command: '/rules' },
+    { label: '👋 Welcome', command: '/welcome' }
+  ],
+  [
+    { label: '🛡️ Locks', command: '/locks' },
+    { label: '⚠️ Warns', command: '/warns' }
+  ],
+  [{ label: '🏓 Ping', command: '/ping' }]
 ];
-const TELEGRAM_MENU_DESCRIPTION = {
-  'core.start': 'Inicia o bot',
-  'core.help': 'Guia rapido de comandos',
-  'core.menu': 'Abre o menu principal',
-  'alerts.alerts': 'Resumo de alertas recentes',
-  'alerts.tokens': 'Lista tokens monitorados',
-  'core.settings': 'Mostra configuracoes atuais',
-  'core.ping': 'Testa resposta do bot'
-};
+const MENU_SHORTCUT_COMMANDS = new Map(
+  MENU_SHORTCUT_ROWS.flatMap((row) =>
+    row.map((item) => [String(item.label || '').trim().toLowerCase(), String(item.command || '').trim()])
+  )
+);
 
 const text = (value) => String(value || '').trim();
 const isoNow = () => new Date().toISOString();
@@ -196,6 +202,11 @@ class CommandRouter {
     return type === 'group' || type === 'supergroup';
   }
 
+  resolveShortcutToCommand(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    return MENU_SHORTCUT_COMMANDS.get(normalized) || '';
+  }
+
   async ensureGroup(chat) {
     if (!this.isGroup(chat)) {
       return null;
@@ -246,28 +257,9 @@ class CommandRouter {
 
   async syncSlashCommands(force = false) {
     try {
-      const cache = await this.refreshEnabledCommands(force);
-      const enabledSlashRows = cache.rows.filter((item) => item.enabled === 1 && String(item.name || '').startsWith('/'));
-
-      const byKey = new Map();
-      for (const item of enabledSlashRows) {
-        byKey.set(String(item.command_key || ''), item);
-      }
-
-      const curatedRows = TELEGRAM_MENU_PRESET.map((key) => byKey.get(key)).filter(Boolean);
-      const sourceRows = curatedRows.length ? curatedRows : enabledSlashRows.slice(0, 20);
-      const commands = sourceRows
-        .map((item) => {
-          const key = String(item.command_key || '');
-          return {
-            command: String(item.name || '')
-              .slice(1)
-              .toLowerCase(),
-            description: normalizeCommandDescription(TELEGRAM_MENU_DESCRIPTION[key] || item.description)
-          };
-        })
-        .slice(0, 100);
-      await this.telegramClient.setMyCommands(commands);
+      await this.refreshEnabledCommands(force);
+      // Keep Telegram native menu empty. We provide a custom in-chat keyboard in /menu.
+      await this.telegramClient.setMyCommands([]);
     } catch (error) {
       this.logger.warn({ err: error.message }, 'failed to sync slash commands');
     }
@@ -702,50 +694,53 @@ class CommandRouter {
 
   buildMenuMessage(ctx, config) {
     if (!config) {
-      return MENU_FALLBACK_TEXT;
+      return [
+        '⭐ Bem-vindo ao iMavy Bot',
+        'Seu hub rapido para alertas, monitoramento e administracao.',
+        '',
+        'Use os botoes abaixo para navegar.'
+      ].join('\n');
     }
 
-    const lines = [];
+    const lines = ['⭐ Bem-vindo ao iMavy Bot'];
     const greeting = this.resolveMenuText(config.greeting, ctx);
     const description = this.resolveMenuText(config.description, ctx);
     const siteUrl = text(config.siteUrl);
 
     if (greeting) {
-      lines.push(greeting);
+      lines.push(greeting.replace(/^\(\s*\*\s*\)\s*/g, '').trim());
     }
 
     if (description) {
-      if (lines.length) {
-        lines.push('');
-      }
+      lines.push('');
       lines.push(description);
     }
 
     if (siteUrl) {
-      if (lines.length) {
-        lines.push('');
-      }
+      lines.push('');
       lines.push(`Saiba mais: ${siteUrl}`);
     }
 
-    if (config.buttons.length) {
-      if (lines.length) {
-        lines.push('');
-      }
-      lines.push('Atalhos:');
-      config.buttons.forEach((button, index) => {
-        const emoji = button.emoji ? `${button.emoji} ` : '';
-        lines.push(`${index + 1}. ${emoji}${button.label} -> ${button.command}`);
-      });
-    }
+    lines.push('');
+    lines.push('Use os botoes abaixo para navegar.');
 
     return lines.join('\n').trim() || MENU_FALLBACK_TEXT;
+  }
+
+  buildMenuKeyboard() {
+    return {
+      keyboard: MENU_SHORTCUT_ROWS.map((row) => row.map((item) => ({ text: item.label }))),
+      resize_keyboard: true,
+      is_persistent: true
+    };
   }
 
   async handleMenu(ctx) {
     const config = this.loadMenuConfig();
     const message = this.buildMenuMessage(ctx, config);
-    await this.reply(ctx, message);
+    await this.send(ctx.chatId, message, {
+      ...this.buildMenuKeyboard()
+    });
   }
 
   updateFlood(chatId, userId) {
@@ -790,9 +785,14 @@ class CommandRouter {
     this.recordMemberActivity(message, group);
     await this.handleMembershipEvents(message, group);
 
-    const body = text(message.text);
+    let body = text(message.text);
     if (!body) {
       return;
+    }
+
+    const shortcutCommand = this.resolveShortcutToCommand(body);
+    if (shortcutCommand) {
+      body = shortcutCommand;
     }
 
     const commandMatch = body.match(/^\/([a-zA-Z0-9_]+)(?:@([a-zA-Z0-9_]+))?(?:\s+([\s\S]+))?$/);
@@ -862,7 +862,7 @@ class CommandRouter {
     const chatLabel = text(message.chat.title || group.label || chatId);
 
     if (Array.isArray(message.new_chat_members) && message.new_chat_members.length) {
-      const template = this.getTemplate(chatId, 'welcome_message', '👋 Bem-vindo, {name}, ao grupo {group}!');
+      const template = this.getTemplate(chatId, 'welcome_message', '?? Bem-vindo, {name}, ao grupo {group}!');
       for (const member of message.new_chat_members) {
         const name = text(member.first_name || member.username || member.id);
         const msg = this.fillTemplate(template, {
@@ -875,7 +875,7 @@ class CommandRouter {
     }
 
     if (message.left_chat_member) {
-      const template = this.getTemplate(chatId, 'goodbye_message', '👋 Ate logo, {name}.');
+      const template = this.getTemplate(chatId, 'goodbye_message', '?? Ate logo, {name}.');
       const name = text(
         message.left_chat_member.first_name || message.left_chat_member.username || message.left_chat_member.id
       );
@@ -1037,7 +1037,7 @@ class CommandRouter {
   async runCommand(ctx) {
     switch (ctx.command.key) {
       case 'core.start':
-        await this.reply(ctx, '✅ Bot online. Use /help para listar comandos.');
+        await this.handleMenu(ctx);
         return;
       case 'core.help':
         await this.handleHelp(ctx);
@@ -1049,12 +1049,12 @@ class CommandRouter {
         await this.handleSettings(ctx);
         return;
       case 'core.ping':
-        await this.reply(ctx, `🏓 Pong | uptime ${Math.floor(process.uptime())}s`);
+        await this.reply(ctx, `?? Pong | uptime ${Math.floor(process.uptime())}s`);
         return;
       case 'core.info':
         await this.reply(
           ctx,
-          `ℹ️ Chat: ${ctx.message.chat.title || ctx.chatId} (${ctx.message.chat.type})\nUsuario: ${ctx.message.from.first_name || ''} (${ctx.userId})`
+          `?? Chat: ${ctx.message.chat.title || ctx.chatId} (${ctx.message.chat.type})\nUsuario: ${ctx.message.from.first_name || ''} (${ctx.userId})`
         );
         return;
       case 'alerts.alerts':
@@ -1198,8 +1198,8 @@ class CommandRouter {
     }
 
     const total = rows.reduce((sum, row) => sum + Number(row.usd_value || 0), 0);
-    const lines = rows.map((row) => `• ${row.network.toUpperCase()} ${shortId(row.buyer)} $${Number(row.usd_value).toFixed(2)}`);
-    await this.reply(ctx, `📊 Alertas recentes\nTotal: $${total.toFixed(2)}\n${lines.join('\n')}`);
+    const lines = rows.map((row) => `� ${row.network.toUpperCase()} ${shortId(row.buyer)} $${Number(row.usd_value).toFixed(2)}`);
+    await this.reply(ctx, `?? Alertas recentes\nTotal: $${total.toFixed(2)}\n${lines.join('\n')}`);
   }
 
   async handleTokens(ctx) {
@@ -1209,8 +1209,8 @@ class CommandRouter {
       return;
     }
 
-    const lines = rows.slice(0, 40).map((row) => `• [${row.network}] ${row.symbol} ${shortId(row.address)}`);
-    await this.reply(ctx, `🪙 Tokens monitorados (${rows.length})\n${lines.join('\n')}`);
+    const lines = rows.slice(0, 40).map((row) => `� [${row.network}] ${row.symbol} ${shortId(row.address)}`);
+    await this.reply(ctx, `?? Tokens monitorados (${rows.length})\n${lines.join('\n')}`);
   }
 
   async handleMinUsd(ctx) {
@@ -1227,7 +1227,7 @@ class CommandRouter {
 
     this.queueService.setMinUsdAlert(value);
     this.tokenModel.setSetting('min_usd_alert', String(value));
-    await this.reply(ctx, `✅ Min USD atualizado para ${value}.`);
+    await this.reply(ctx, `? Min USD atualizado para ${value}.`);
   }
 
   async handleModeration(ctx) {
@@ -1241,7 +1241,7 @@ class CommandRouter {
 
     if (key === 'mod.ban') {
       await this.telegramClient.banUser(ctx.chatId, Number(target.id), { revoke_messages: true });
-      await this.reply(ctx, `🚫 Usuario banido: ${target.label}`);
+      await this.reply(ctx, `?? Usuario banido: ${target.label}`);
       await this.logModerationEvent(ctx.chatId, {
         user_id: target.id,
         actor_id: ctx.userId,
@@ -1254,7 +1254,7 @@ class CommandRouter {
 
     if (key === 'mod.unban') {
       await this.telegramClient.unbanUser(ctx.chatId, Number(target.id), { only_if_banned: true });
-      await this.reply(ctx, `✅ Usuario desbanido: ${target.label}`);
+      await this.reply(ctx, `? Usuario desbanido: ${target.label}`);
       await this.logModerationEvent(ctx.chatId, {
         user_id: target.id,
         actor_id: ctx.userId,
@@ -1267,7 +1267,7 @@ class CommandRouter {
 
     if (key === 'mod.kick') {
       await this.telegramClient.kickUser(ctx.chatId, Number(target.id));
-      await this.reply(ctx, `👢 Usuario removido: ${target.label}`);
+      await this.reply(ctx, `?? Usuario removido: ${target.label}`);
       await this.logModerationEvent(ctx.chatId, {
         user_id: target.id,
         actor_id: ctx.userId,
@@ -1281,7 +1281,7 @@ class CommandRouter {
     if (key === 'mod.mute') {
       const minutes = Math.max(1, Math.min(Number(ctx.args[1] || ctx.args[0]) || 10, 10080));
       await this.telegramClient.muteUser(ctx.chatId, Number(target.id), minutes);
-      await this.reply(ctx, `🔇 Usuario silenciado por ${minutes} minuto(s).`);
+      await this.reply(ctx, `?? Usuario silenciado por ${minutes} minuto(s).`);
       await this.logModerationEvent(ctx.chatId, {
         user_id: target.id,
         actor_id: ctx.userId,
@@ -1297,7 +1297,7 @@ class CommandRouter {
 
     if (key === 'mod.unmute') {
       await this.telegramClient.unmuteUser(ctx.chatId, Number(target.id));
-      await this.reply(ctx, '🔊 Mute removido.');
+      await this.reply(ctx, '?? Mute removido.');
       await this.logModerationEvent(ctx.chatId, {
         user_id: target.id,
         actor_id: ctx.userId,
@@ -1334,7 +1334,7 @@ class CommandRouter {
         } catch (_error) {
           // ignore
         }
-        await this.reply(ctx, `⚠️ Warn ${total}/${limit}. Usuario silenciado por 60 minutos.`);
+        await this.reply(ctx, `?? Warn ${total}/${limit}. Usuario silenciado por 60 minutos.`);
         await this.logModerationEvent(ctx.chatId, {
           user_id: target.id,
           actor_id: ctx.userId,
@@ -1347,7 +1347,7 @@ class CommandRouter {
           }
         });
       } else {
-        await this.reply(ctx, `⚠️ Warn aplicado. Total: ${total}`);
+        await this.reply(ctx, `?? Warn aplicado. Total: ${total}`);
       }
       return;
     }
@@ -1358,7 +1358,7 @@ class CommandRouter {
         await this.reply(ctx, 'Nenhum warn para remover.');
         return;
       }
-      await this.reply(ctx, `✅ Warn removido. Restante: ${this.tokenModel.getWarningCount(ctx.chatId, target.id)}`);
+      await this.reply(ctx, `? Warn removido. Restante: ${this.tokenModel.getWarningCount(ctx.chatId, target.id)}`);
       await this.logModerationEvent(ctx.chatId, {
         user_id: target.id,
         actor_id: ctx.userId,
@@ -1378,7 +1378,7 @@ class CommandRouter {
       const details = this.tokenModel
         .listWarnings(ctx.chatId, warnTarget.id, 5)
         .map((item, index) => `${index + 1}. ${item.reason} (${item.created_at})`);
-      await this.reply(ctx, `⚠️ Warns: ${count}\n${details.join('\n') || 'sem detalhes'}`);
+      await this.reply(ctx, `?? Warns: ${count}\n${details.join('\n') || 'sem detalhes'}`);
       await this.logModerationEvent(ctx.chatId, {
         user_id: warnTarget.id,
         actor_id: ctx.userId,
@@ -1420,7 +1420,7 @@ class CommandRouter {
           // ignore
         }
       }
-      await this.send(ctx.chatId, `🧹 Purge concluido: ${deleted}/${count} mensagens.`);
+      await this.send(ctx.chatId, `?? Purge concluido: ${deleted}/${count} mensagens.`);
     }
   }
 
@@ -1431,7 +1431,7 @@ class CommandRouter {
     if (key === 'security.locks') {
       await this.reply(
         ctx,
-        `🔐 Locks\nantispam=${lockState.antispam ? 'on' : 'off'}\nantilink=${lockState.antilink ? 'on' : 'off'}\nantiflood=${lockState.antiflood ? 'on' : 'off'}\ncaptcha=${lockState.captcha ? 'on' : 'off'}\nantiraid=${lockState.antiraid ? 'on' : 'off'}`
+        `?? Locks\nantispam=${lockState.antispam ? 'on' : 'off'}\nantilink=${lockState.antilink ? 'on' : 'off'}\nantiflood=${lockState.antiflood ? 'on' : 'off'}\ncaptcha=${lockState.captcha ? 'on' : 'off'}\nantiraid=${lockState.antiraid ? 'on' : 'off'}`
       );
       return;
     }
@@ -1444,7 +1444,7 @@ class CommandRouter {
         return;
       }
       this.tokenModel.setGroupLock(ctx.chatId, lockKey, desired);
-      await this.reply(ctx, `🔐 ${lockKey} ${desired ? 'ativado' : 'desativado'}.`);
+      await this.reply(ctx, `?? ${lockKey} ${desired ? 'ativado' : 'desativado'}.`);
       return;
     }
 
@@ -1455,7 +1455,7 @@ class CommandRouter {
         return;
       }
       this.tokenModel.setGroupLock(ctx.chatId, 'captcha', desired);
-      await this.reply(ctx, `🔐 captcha ${desired ? 'ativado' : 'desativado'}.`);
+      await this.reply(ctx, `?? captcha ${desired ? 'ativado' : 'desativado'}.`);
       return;
     }
 
@@ -1472,7 +1472,7 @@ class CommandRouter {
           patch[item] = enable;
         });
         this.tokenModel.setGroupLocksBulk(ctx.chatId, patch);
-        await this.reply(ctx, `🔐 Todos os locks ${enable ? 'ativados' : 'desativados'}.`);
+        await this.reply(ctx, `?? Todos os locks ${enable ? 'ativados' : 'desativados'}.`);
         return;
       }
       const lockKey = this.resolveLock(target);
@@ -1481,18 +1481,18 @@ class CommandRouter {
         return;
       }
       this.tokenModel.setGroupLock(ctx.chatId, lockKey, enable);
-      await this.reply(ctx, `🔐 ${lockKey} ${enable ? 'ativado' : 'desativado'}.`);
+      await this.reply(ctx, `?? ${lockKey} ${enable ? 'ativado' : 'desativado'}.`);
     }
   }
 
   async handleWelcome(ctx) {
     const key = ctx.command.key;
     if (key === 'welcome.welcome') {
-      await this.reply(ctx, this.getTemplate(ctx.chatId, 'welcome_message', '👋 Bem-vindo, {name}!'));
+      await this.reply(ctx, this.getTemplate(ctx.chatId, 'welcome_message', '?? Bem-vindo, {name}!'));
       return;
     }
     if (key === 'welcome.goodbye') {
-      await this.reply(ctx, this.getTemplate(ctx.chatId, 'goodbye_message', '👋 Ate logo, {name}.'));
+      await this.reply(ctx, this.getTemplate(ctx.chatId, 'goodbye_message', '?? Ate logo, {name}.'));
       return;
     }
     if (key === 'welcome.rules') {
@@ -1508,20 +1508,20 @@ class CommandRouter {
         return;
       }
       this.tokenModel.setChatSetting(ctx.chatId, settingKey, content);
-      await this.reply(ctx, '✅ Configuracao salva.');
+      await this.reply(ctx, '? Configuracao salva.');
     }
   }
 
   async handleFun(ctx) {
     const key = ctx.command.key;
     if (key === 'fun.dice') {
-      await this.telegramClient.sendDice(ctx.chatId, '🎲');
+      await this.telegramClient.sendDice(ctx.chatId, '??');
       return;
     }
     if (key === 'fun.roll') {
       const max = Math.max(2, Math.min(Number(ctx.args[0]) || 100, 1000000));
       const value = Math.floor(Math.random() * max) + 1;
-      await this.reply(ctx, `🎲 Rolagem: ${value} (1-${max})`);
+      await this.reply(ctx, `?? Rolagem: ${value} (1-${max})`);
       return;
     }
     if (key === 'fun.meme') {
@@ -1540,15 +1540,15 @@ class CommandRouter {
         return;
       }
       const score = Math.floor(Math.random() * 101);
-      await this.reply(ctx, `💘 ${text(ctx.message.from.first_name || 'Voce')} x ${other} = ${score}%`);
+      await this.reply(ctx, `?? ${text(ctx.message.from.first_name || 'Voce')} x ${other} = ${score}%`);
       return;
     }
     if (key === 'fun.8ball') {
-      await this.reply(ctx, `🎱 ${BALL_8[Math.floor(Math.random() * BALL_8.length)]}`);
+      await this.reply(ctx, `?? ${BALL_8[Math.floor(Math.random() * BALL_8.length)]}`);
       return;
     }
     if (key === 'fun.coinflip') {
-      await this.reply(ctx, `🪙 ${COIN[Math.floor(Math.random() * COIN.length)]}`);
+      await this.reply(ctx, `?? ${COIN[Math.floor(Math.random() * COIN.length)]}`);
     }
   }
 
@@ -1561,7 +1561,7 @@ class CommandRouter {
         label: text(ctx.message.from.username ? `@${ctx.message.from.username}` : ctx.message.from.first_name)
       };
       const account = this.tokenModel.getEconomyAccount(ctx.chatId, target.id);
-      await this.reply(ctx, `💰 Saldo ${target.label}: ${Number(account.balance || 0).toFixed(2)} coins`);
+      await this.reply(ctx, `?? Saldo ${target.label}: ${Number(account.balance || 0).toFixed(2)} coins`);
       return;
     }
 
@@ -1571,7 +1571,7 @@ class CommandRouter {
       const next = last + 24 * 60 * 60 * 1000;
       if (last && Date.now() < next) {
         const sec = Math.ceil((next - Date.now()) / 1000);
-        await this.reply(ctx, `⏳ Daily em cooldown (${Math.floor(sec / 3600)}h ${(Math.floor(sec / 60) % 60)}m).`);
+        await this.reply(ctx, `? Daily em cooldown (${Math.floor(sec / 3600)}h ${(Math.floor(sec / 60) % 60)}m).`);
         return;
       }
       const reward = 50 + Math.floor(Math.random() * 101);
@@ -1583,7 +1583,7 @@ class CommandRouter {
         last_daily_at: isoNow(),
         last_work_at: updated.last_work_at
       });
-      await this.reply(ctx, `🎁 Daily: +${reward} coins. Saldo: ${Number(updated.balance).toFixed(2)}.`);
+      await this.reply(ctx, `?? Daily: +${reward} coins. Saldo: ${Number(updated.balance).toFixed(2)}.`);
       return;
     }
 
@@ -1593,7 +1593,7 @@ class CommandRouter {
       const next = last + 60 * 60 * 1000;
       if (last && Date.now() < next) {
         const sec = Math.ceil((next - Date.now()) / 1000);
-        await this.reply(ctx, `⏳ Work em cooldown (${Math.floor(sec / 60)}m).`);
+        await this.reply(ctx, `? Work em cooldown (${Math.floor(sec / 60)}m).`);
         return;
       }
       const reward = 10 + Math.floor(Math.random() * 31);
@@ -1605,7 +1605,7 @@ class CommandRouter {
         last_daily_at: updated.last_daily_at,
         last_work_at: isoNow()
       });
-      await this.reply(ctx, `🧰 Work: +${reward} coins. Saldo: ${Number(updated.balance).toFixed(2)}.`);
+      await this.reply(ctx, `?? Work: +${reward} coins. Saldo: ${Number(updated.balance).toFixed(2)}.`);
       return;
     }
 
@@ -1636,7 +1636,7 @@ class CommandRouter {
       }
       this.tokenModel.addEconomyBalance(ctx.chatId, ctx.userId, -amount);
       const receiver = this.tokenModel.addEconomyBalance(ctx.chatId, target.id, amount);
-      await this.reply(ctx, `✅ Transferido ${amount.toFixed(2)} para ${target.label}. Saldo dele: ${Number(receiver.balance).toFixed(2)}.`);
+      await this.reply(ctx, `? Transferido ${amount.toFixed(2)} para ${target.label}. Saldo dele: ${Number(receiver.balance).toFixed(2)}.`);
       return;
     }
 
@@ -1647,7 +1647,7 @@ class CommandRouter {
         return;
       }
       const lines = rows.map((item, i) => `${i + 1}. ${shortId(item.user_id)} - ${Number(item.balance).toFixed(2)}`);
-      await this.reply(ctx, `🏆 Leaderboard\n${lines.join('\n')}`);
+      await this.reply(ctx, `?? Leaderboard\n${lines.join('\n')}`);
     }
   }
 
@@ -1684,7 +1684,7 @@ class CommandRouter {
       const keyword = raw.slice(0, split).trim();
       const response = raw.slice(split + 2).trim();
       this.tokenModel.upsertChatFilter({ chatId: ctx.chatId, keyword, response, enabled: true });
-      await this.reply(ctx, `✅ Filtro salvo para "${keyword}".`);
+      await this.reply(ctx, `? Filtro salvo para "${keyword}".`);
       return;
     }
     if (key === 'adv.filters') {
@@ -1693,8 +1693,8 @@ class CommandRouter {
         await this.reply(ctx, 'Nenhum filtro cadastrado.');
         return;
       }
-      const lines = filters.map((item) => `• ${item.keyword} => ${item.response}`);
-      await this.reply(ctx, `🧩 Filtros (${filters.length})\n${lines.join('\n')}`);
+      const lines = filters.map((item) => `� ${item.keyword} => ${item.response}`);
+      await this.reply(ctx, `?? Filtros (${filters.length})\n${lines.join('\n')}`);
       return;
     }
     if (key === 'adv.delfilter') {
@@ -1704,7 +1704,7 @@ class CommandRouter {
         return;
       }
       const removed = this.tokenModel.deleteChatFilter(ctx.chatId, keyword);
-      await this.reply(ctx, removed ? '🗑️ Filtro removido.' : 'Filtro nao encontrado.');
+      await this.reply(ctx, removed ? '??? Filtro removido.' : 'Filtro nao encontrado.');
       return;
     }
     if (key === 'adv.setlang') {
@@ -1714,7 +1714,7 @@ class CommandRouter {
         return;
       }
       this.tokenModel.setChatSetting(ctx.chatId, 'lang', lang);
-      await this.reply(ctx, `🌐 Idioma atualizado para ${lang}.`);
+      await this.reply(ctx, `?? Idioma atualizado para ${lang}.`);
       return;
     }
     if (key === 'adv.setlog') {
@@ -1724,7 +1724,7 @@ class CommandRouter {
         return;
       }
       this.tokenModel.setChatSetting(ctx.chatId, 'log_channel', value);
-      await this.reply(ctx, '📝 Configuracao de log salva.');
+      await this.reply(ctx, '?? Configuracao de log salva.');
       return;
     }
     if (key === 'adv.export' || key === 'adv.backup') {
@@ -1773,7 +1773,7 @@ class CommandRouter {
           }
         });
       }
-      await this.reply(ctx, '✅ Importacao concluida.');
+      await this.reply(ctx, '? Importacao concluida.');
     }
   }
 }
