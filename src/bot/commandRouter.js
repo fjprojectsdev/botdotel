@@ -785,8 +785,7 @@ class CommandRouter {
   }
 
   async handleDeveloper(ctx) {
-    const contact = text(process.env.DEVELOPER_CONTACT || process.env.SUPPORT_CONTACT || 'https://t.me/imavyagent');
-    await this.send(ctx.chatId, `Fale com o desenvolvedor: ${contact}`);
+    await this.send(ctx.chatId, 'Fale com o desenvolvedor: @FLAVIOJHONATAN');
   }
 
   async handlePrivateHelp(ctx) {
