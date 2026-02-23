@@ -119,6 +119,24 @@ const MENU_SHORTCUT_COMMANDS = new Map(
     row.map((item) => [String(item.label || '').trim().toLowerCase(), String(item.command || '').trim()])
   )
 );
+const TELEGRAM_SLASH_MENU_PRESET = [
+  'core.start',
+  'core.menu',
+  'core.help',
+  'alerts.alerts',
+  'alerts.tokens',
+  'core.settings',
+  'core.ping'
+];
+const TELEGRAM_SLASH_MENU_FALLBACK = [
+  { command: 'start', description: 'Inicia o bot' },
+  { command: 'menu', description: 'Abre o menu principal' },
+  { command: 'help', description: 'Guia rapido de comandos' },
+  { command: 'alerts', description: 'Resumo de alertas recentes' },
+  { command: 'tokens', description: 'Lista tokens monitorados' },
+  { command: 'settings', description: 'Mostra configuracoes atuais' },
+  { command: 'ping', description: 'Teste rapido de resposta' }
+];
 
 const text = (value) => String(value || '').trim();
 const isoNow = () => new Date().toISOString();
@@ -151,6 +169,8 @@ const normalizeCommandDescription = (value) => {
   }
   return raw.length > 72 ? `${raw.slice(0, 69)}...` : raw;
 };
+
+const isValidSlashCommandName = (value) => /^[a-z0-9_]{1,32}$/.test(String(value || '').trim().toLowerCase());
 
 class CommandRouter {
   constructor({ telegramClient, tokenModel, queueService, enabledNetworks = [], logger }) {
@@ -257,9 +277,27 @@ class CommandRouter {
 
   async syncSlashCommands(force = false) {
     try {
-      await this.refreshEnabledCommands(force);
-      // Keep Telegram native menu empty. We provide a custom in-chat keyboard in /menu.
-      await this.telegramClient.setMyCommands([]);
+      const cache = await this.refreshEnabledCommands(force);
+      const enabledSlashRows = cache.rows.filter((item) => item.enabled === 1 && String(item.name || '').startsWith('/'));
+      const byKey = new Map(enabledSlashRows.map((item) => [String(item.command_key || ''), item]));
+
+      let commands = TELEGRAM_SLASH_MENU_PRESET.map((key) => byKey.get(key))
+        .filter(Boolean)
+        .map((item) => ({
+          command: String(item.name || '')
+            .slice(1)
+            .toLowerCase()
+            .trim(),
+          description: normalizeCommandDescription(item.description)
+        }))
+        .filter((item) => isValidSlashCommandName(item.command))
+        .slice(0, 20);
+
+      if (!commands.length) {
+        commands = TELEGRAM_SLASH_MENU_FALLBACK;
+      }
+
+      await this.telegramClient.setMyCommands(commands);
     } catch (error) {
       this.logger.warn({ err: error.message }, 'failed to sync slash commands');
     }
@@ -729,9 +767,12 @@ class CommandRouter {
 
   buildMenuKeyboard() {
     return {
-      keyboard: MENU_SHORTCUT_ROWS.map((row) => row.map((item) => ({ text: item.label }))),
-      resize_keyboard: true,
-      is_persistent: true
+      reply_markup: {
+        keyboard: MENU_SHORTCUT_ROWS.map((row) => row.map((item) => ({ text: item.label }))),
+        resize_keyboard: true,
+        is_persistent: true,
+        input_field_placeholder: 'Escolha um atalho...'
+      }
     };
   }
 
