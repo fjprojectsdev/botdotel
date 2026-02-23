@@ -1349,22 +1349,63 @@ const renderRuntimeMeta = () => {
   const enabledNetworks = runtime.enabledNetworks || [];
   const scheduleMedia = String(settings.media_schedule_url || '').trim();
   const tokensWithImage = state.tokens.filter((item) => String(item.buy_media_url || '').trim()).length;
+  const items = [
+    {
+      label: 'API conectada',
+      value: state.apiBase || '-',
+      tone: 'neutral'
+    },
+    {
+      label: 'Redes ativas',
+      value: enabledNetworks.join(', ') || 'nenhuma',
+      tone: enabledNetworks.length ? 'ok' : 'warn'
+    },
+    {
+      label: 'Filas',
+      value: `Process ${stats.queues?.processSize || 0} | Telegram ${stats.queues?.telegramSize || 0}`,
+      tone: Number(stats.queues?.processSize || 0) > 0 || Number(stats.queues?.telegramSize || 0) > 0 ? 'warn' : 'ok'
+    },
+    {
+      label: 'Saude do bot',
+      value: `Incidentes ${stats.incidentsOpen || 0} | Telegram ${stats.telegramReady ? 'online' : 'offline'}`,
+      tone: stats.telegramReady ? 'ok' : 'danger'
+    },
+    {
+      label: 'Alertas recentes',
+      value: String(stats.recentAlerts || 0),
+      tone: 'neutral'
+    },
+    {
+      label: 'Agendamentos pendentes',
+      value: String(stats.schedules?.pending || 0),
+      tone: Number(stats.schedules?.pending || 0) > 0 ? 'warn' : 'ok'
+    },
+    {
+      label: 'Botoes do menu inicial',
+      value: String(state.menuConfig?.buttons?.length || 0),
+      tone: 'neutral'
+    },
+    {
+      label: 'Tokens com imagem',
+      value: `${tokensWithImage}/${state.tokens.length || 0}`,
+      tone: tokensWithImage === state.tokens.length && state.tokens.length > 0 ? 'ok' : 'warn'
+    },
+    {
+      label: 'Imagem de avisos',
+      value: scheduleMedia ? shortText(scheduleMedia, 32, 22) : 'desativada',
+      tone: scheduleMedia ? 'ok' : 'warn'
+    }
+  ];
 
-  refs.runtimeMeta.innerHTML = [
-    `<div>API conectada: <strong>${escapeHtml(state.apiBase || '-')}</strong></div>`,
-    `<div>Redes ativas: <strong>${escapeHtml(enabledNetworks.join(', ') || 'nenhuma')}</strong></div>`,
-    `<div>Process queue: <strong>${stats.queues?.processSize || 0}</strong> | Telegram queue: <strong>${
-      stats.queues?.telegramSize || 0
-    }</strong></div>`,
-    `<div>Incidentes abertos: <strong>${stats.incidentsOpen || 0}</strong> | Telegram pronto: <strong>${
-      stats.telegramReady ? 'sim' : 'nao'
-    }</strong></div>`,
-    `<div>Alertas recentes registrados: <strong>${stats.recentAlerts || 0}</strong></div>`,
-    `<div>Agendamentos pendentes: <strong>${stats.schedules?.pending || 0}</strong></div>`,
-    `<div>Botoes do menu inicial: <strong>${state.menuConfig?.buttons?.length || 0}</strong></div>`,
-    `<div>Tokens com imagem de compra: <strong>${tokensWithImage}/${state.tokens.length || 0}</strong></div>`,
-    `<div>Imagem avisos: <strong>${escapeHtml(scheduleMedia ? shortText(scheduleMedia, 24, 18) : 'desativada')}</strong></div>`
-  ].join('');
+  refs.runtimeMeta.innerHTML = `<div class="runtime-meta-grid">${items
+    .map((item) => {
+      return `<article class="runtime-meta-card">
+        <span class="runtime-meta-label">${escapeHtml(item.label)}</span>
+        <strong class="runtime-meta-value">${escapeHtml(item.value)}</strong>
+        <span class="runtime-meta-pill runtime-meta-pill-${escapeHtml(item.tone)}"></span>
+      </article>`;
+    })
+    .join('')}</div>`;
 };
 
 const renderGroups = () => {
