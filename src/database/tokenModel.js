@@ -1,9 +1,13 @@
 const fs = require('fs');
 const path = require('path');
 const Database = require('better-sqlite3');
+const crypto = require('crypto');
 
 const ALLOWED_RECURRENCE = new Set(['none', 'daily']);
 const ALLOWED_SCHEDULE_STATUS = new Set(['pending', 'sent', 'disabled', 'failed']);
+const ALLOWED_INCIDENT_STATUS = new Set(['open', 'ack', 'resolved', 'ignored']);
+const ALLOWED_INCIDENT_SEVERITY = new Set(['low', 'medium', 'high', 'critical']);
+const ALLOWED_ADMIN_ROLE = new Set(['viewer', 'editor', 'admin', 'owner']);
 const DEFAULT_GROUP_PERMISSIONS = [
   'buy_alerts',
   'core_commands',
@@ -545,6 +549,8 @@ class TokenModel {
         token TEXT NOT NULL,
         network TEXT NOT NULL,
         hash TEXT NOT NULL,
+        log_index INTEGER NOT NULL DEFAULT 0,
+        event_uid TEXT NOT NULL DEFAULT '',
         buyer TEXT NOT NULL,
         amount REAL NOT NULL,
         usd_value REAL NOT NULL,
@@ -717,10 +723,78 @@ class TokenModel {
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
 
+      CREATE TABLE IF NOT EXISTS group_delivery_health (
+        chat_id TEXT PRIMARY KEY,
+        consecutive_failures INTEGER NOT NULL DEFAULT 0,
+        total_failures INTEGER NOT NULL DEFAULT 0,
+        total_success INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT NOT NULL DEFAULT '',
+        last_error_code TEXT NOT NULL DEFAULT '',
+        last_error_at TEXT,
+        last_success_at TEXT,
+        auto_disabled_at TEXT,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE TABLE IF NOT EXISTS incidents (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        unique_key TEXT UNIQUE,
+        incident_type TEXT NOT NULL,
+        severity TEXT NOT NULL DEFAULT 'medium',
+        status TEXT NOT NULL DEFAULT 'open',
+        title TEXT NOT NULL,
+        message TEXT NOT NULL DEFAULT '',
+        chat_id TEXT NOT NULL DEFAULT '',
+        context TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        resolved_at TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS pending_jobs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_type TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'queued',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        available_at TEXT NOT NULL DEFAULT (datetime('now')),
+        locked_at TEXT,
+        last_error TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE TABLE IF NOT EXISTS admin_users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'owner',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        failed_attempts INTEGER NOT NULL DEFAULT 0,
+        locked_until TEXT,
+        last_login_at TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE TABLE IF NOT EXISTS audit_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        actor_username TEXT NOT NULL DEFAULT '',
+        actor_role TEXT NOT NULL DEFAULT '',
+        method TEXT NOT NULL DEFAULT '',
+        path TEXT NOT NULL DEFAULT '',
+        action TEXT NOT NULL DEFAULT '',
+        resource TEXT NOT NULL DEFAULT '',
+        status_code INTEGER NOT NULL DEFAULT 0,
+        details TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
       CREATE INDEX IF NOT EXISTS idx_tokens_network ON tokens(network);
       CREATE INDEX IF NOT EXISTS idx_tokens_enabled ON tokens(enabled);
       CREATE INDEX IF NOT EXISTS idx_transactions_hash ON transactions(hash);
       CREATE INDEX IF NOT EXISTS idx_transactions_network_ts ON transactions(network, timestamp);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_event_uid ON transactions(event_uid);
       CREATE INDEX IF NOT EXISTS idx_member_activity_seen ON member_activity(last_seen DESC);
       CREATE INDEX IF NOT EXISTS idx_member_activity_chat ON member_activity(chat_id, last_seen DESC);
       CREATE INDEX IF NOT EXISTS idx_groups_enabled ON groups(enabled);
@@ -737,6 +811,13 @@ class TokenModel {
       CREATE INDEX IF NOT EXISTS idx_moderation_logs_chat ON moderation_logs(chat_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_moderation_logs_type ON moderation_logs(event_type, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_broadcast_status_created ON broadcast_messages(status, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_group_delivery_health_failures ON group_delivery_health(consecutive_failures DESC);
+      CREATE INDEX IF NOT EXISTS idx_incidents_status_created ON incidents(status, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_incidents_type ON incidents(incident_type, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_pending_jobs_status_available ON pending_jobs(status, available_at ASC);
+      CREATE INDEX IF NOT EXISTS idx_pending_jobs_type_status ON pending_jobs(job_type, status, available_at ASC);
+      CREATE INDEX IF NOT EXISTS idx_admin_users_role_enabled ON admin_users(role, enabled);
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at DESC);
     `);
 
     this.runMigrations();
@@ -783,6 +864,36 @@ class TokenModel {
       this.db.exec(`ALTER TABLE tokens ADD COLUMN buy_media_url TEXT`);
       this.logger.info('database migration applied: tokens.buy_media_url');
     }
+
+    const transactionColumns = this.db.prepare('PRAGMA table_info(transactions)').all();
+    const hasLogIndex = transactionColumns.some((column) => column.name === 'log_index');
+    const hasEventUid = transactionColumns.some((column) => column.name === 'event_uid');
+
+    if (!hasLogIndex) {
+      this.db.exec(`ALTER TABLE transactions ADD COLUMN log_index INTEGER NOT NULL DEFAULT 0`);
+      this.logger.info('database migration applied: transactions.log_index');
+    }
+
+    if (!hasEventUid) {
+      this.db.exec(`ALTER TABLE transactions ADD COLUMN event_uid TEXT NOT NULL DEFAULT ''`);
+      this.logger.info('database migration applied: transactions.event_uid');
+    }
+
+    this.db.exec(`
+      UPDATE transactions
+      SET log_index = COALESCE(log_index, 0)
+      WHERE log_index IS NULL
+    `);
+
+    this.db.exec(`
+      UPDATE transactions
+      SET event_uid = LOWER(network || ':' || hash || ':' || token || ':' || CAST(COALESCE(log_index, 0) AS TEXT))
+      WHERE event_uid IS NULL OR TRIM(event_uid) = ''
+    `);
+
+    this.db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_event_uid ON transactions(event_uid)
+    `);
   }
 
   prepareStatements() {
@@ -863,16 +974,24 @@ class TokenModel {
       SELECT 1 FROM transactions WHERE token = ? AND hash = ? LIMIT 1
     `);
 
+    this.statements.hasTransactionByEventUid = this.db.prepare(`
+      SELECT 1 FROM transactions WHERE event_uid = ? LIMIT 1
+    `);
+
     this.statements.insertTransaction = this.db.prepare(`
-      INSERT INTO transactions (token, network, hash, buyer, amount, usd_value, timestamp)
-      VALUES (@token, @network, @hash, @buyer, @amount, @usd_value, @timestamp)
+      INSERT INTO transactions (token, network, hash, log_index, event_uid, buyer, amount, usd_value, timestamp)
+      VALUES (@token, @network, @hash, @log_index, @event_uid, @buyer, @amount, @usd_value, @timestamp)
     `);
 
     this.statements.selectRecentTransactions = this.db.prepare(`
-      SELECT id, token, network, hash, buyer, amount, usd_value, timestamp, created_at
+      SELECT id, token, network, hash, log_index, event_uid, buyer, amount, usd_value, timestamp, created_at
       FROM transactions
       ORDER BY datetime(timestamp) DESC
       LIMIT ?
+    `);
+
+    this.statements.countTransactions = this.db.prepare(`
+      SELECT COUNT(*) AS total FROM transactions
     `);
 
     this.statements.selectTopMembersByCutoff = this.db.prepare(`
@@ -1500,6 +1619,315 @@ class TokenModel {
       SET status = @status, sent_count = @sent_count, fail_count = @fail_count, updated_at = @updated_at
       WHERE id = @id
     `);
+
+    this.statements.upsertGroupDeliveryHealth = this.db.prepare(`
+      INSERT INTO group_delivery_health (
+        chat_id,
+        consecutive_failures,
+        total_failures,
+        total_success,
+        last_error,
+        last_error_code,
+        last_error_at,
+        last_success_at,
+        auto_disabled_at,
+        updated_at
+      )
+      VALUES (
+        @chat_id,
+        @consecutive_failures,
+        @total_failures,
+        @total_success,
+        @last_error,
+        @last_error_code,
+        @last_error_at,
+        @last_success_at,
+        @auto_disabled_at,
+        @updated_at
+      )
+      ON CONFLICT(chat_id)
+      DO UPDATE SET
+        consecutive_failures = excluded.consecutive_failures,
+        total_failures = excluded.total_failures,
+        total_success = excluded.total_success,
+        last_error = excluded.last_error,
+        last_error_code = excluded.last_error_code,
+        last_error_at = excluded.last_error_at,
+        last_success_at = excluded.last_success_at,
+        auto_disabled_at = excluded.auto_disabled_at,
+        updated_at = excluded.updated_at
+    `);
+
+    this.statements.selectGroupDeliveryHealthByChat = this.db.prepare(`
+      SELECT
+        chat_id,
+        consecutive_failures,
+        total_failures,
+        total_success,
+        last_error,
+        last_error_code,
+        last_error_at,
+        last_success_at,
+        auto_disabled_at,
+        updated_at
+      FROM group_delivery_health
+      WHERE chat_id = ?
+      LIMIT 1
+    `);
+
+    this.statements.selectAllGroupDeliveryHealth = this.db.prepare(`
+      SELECT
+        chat_id,
+        consecutive_failures,
+        total_failures,
+        total_success,
+        last_error,
+        last_error_code,
+        last_error_at,
+        last_success_at,
+        auto_disabled_at,
+        updated_at
+      FROM group_delivery_health
+      ORDER BY consecutive_failures DESC, updated_at DESC
+    `);
+
+    this.statements.insertIncident = this.db.prepare(`
+      INSERT INTO incidents (
+        unique_key,
+        incident_type,
+        severity,
+        status,
+        title,
+        message,
+        chat_id,
+        context,
+        created_at,
+        updated_at,
+        resolved_at
+      )
+      VALUES (
+        @unique_key,
+        @incident_type,
+        @severity,
+        @status,
+        @title,
+        @message,
+        @chat_id,
+        @context,
+        @created_at,
+        @updated_at,
+        @resolved_at
+      )
+    `);
+
+    this.statements.selectIncidentById = this.db.prepare(`
+      SELECT id, unique_key, incident_type, severity, status, title, message, chat_id, context, created_at, updated_at, resolved_at
+      FROM incidents
+      WHERE id = ?
+      LIMIT 1
+    `);
+
+    this.statements.selectOpenIncidentByUniqueKey = this.db.prepare(`
+      SELECT id, unique_key, incident_type, severity, status, title, message, chat_id, context, created_at, updated_at, resolved_at
+      FROM incidents
+      WHERE unique_key = ? AND status IN ('open', 'ack')
+      ORDER BY id DESC
+      LIMIT 1
+    `);
+
+    this.statements.selectIncidentsByStatus = this.db.prepare(`
+      SELECT id, unique_key, incident_type, severity, status, title, message, chat_id, context, created_at, updated_at, resolved_at
+      FROM incidents
+      WHERE status = ?
+      ORDER BY id DESC
+      LIMIT ?
+    `);
+
+    this.statements.selectIncidents = this.db.prepare(`
+      SELECT id, unique_key, incident_type, severity, status, title, message, chat_id, context, created_at, updated_at, resolved_at
+      FROM incidents
+      ORDER BY id DESC
+      LIMIT ?
+    `);
+
+    this.statements.updateIncidentStatus = this.db.prepare(`
+      UPDATE incidents
+      SET
+        status = @status,
+        updated_at = @updated_at,
+        resolved_at = @resolved_at
+      WHERE id = @id
+    `);
+
+    this.statements.countOpenIncidents = this.db.prepare(`
+      SELECT COUNT(*) AS total
+      FROM incidents
+      WHERE status IN ('open', 'ack')
+    `);
+
+    this.statements.insertPendingJob = this.db.prepare(`
+      INSERT INTO pending_jobs (job_type, payload, status, attempts, available_at, locked_at, last_error, created_at, updated_at)
+      VALUES (@job_type, @payload, @status, @attempts, @available_at, @locked_at, @last_error, @created_at, @updated_at)
+    `);
+
+    this.statements.selectPendingJobsForClaim = this.db.prepare(`
+      SELECT id, job_type, payload, status, attempts, available_at, locked_at, last_error, created_at, updated_at
+      FROM pending_jobs
+      WHERE job_type = ?
+        AND status = 'queued'
+        AND datetime(available_at) <= datetime(?)
+      ORDER BY id ASC
+      LIMIT ?
+    `);
+
+    this.statements.markPendingJobProcessing = this.db.prepare(`
+      UPDATE pending_jobs
+      SET status = 'processing', locked_at = ?, updated_at = ?
+      WHERE id = ? AND status = 'queued'
+    `);
+
+    this.statements.markPendingJobQueued = this.db.prepare(`
+      UPDATE pending_jobs
+      SET status = 'queued', attempts = ?, available_at = ?, locked_at = NULL, last_error = ?, updated_at = ?
+      WHERE id = ?
+    `);
+
+    this.statements.deletePendingJobById = this.db.prepare(`
+      DELETE FROM pending_jobs WHERE id = ?
+    `);
+
+    this.statements.requeueStalePendingJobs = this.db.prepare(`
+      UPDATE pending_jobs
+      SET status = 'queued', locked_at = NULL, updated_at = ?
+      WHERE status = 'processing' AND datetime(locked_at) <= datetime(?)
+    `);
+
+    this.statements.selectPendingJobStats = this.db.prepare(`
+      SELECT
+        SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END) AS queued,
+        SUM(CASE WHEN status = 'processing' THEN 1 ELSE 0 END) AS processing,
+        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+        COUNT(*) AS total
+      FROM pending_jobs
+    `);
+
+    this.statements.selectPendingJobById = this.db.prepare(`
+      SELECT id, job_type, payload, status, attempts, available_at, locked_at, last_error, created_at, updated_at
+      FROM pending_jobs
+      WHERE id = ?
+      LIMIT 1
+    `);
+
+    this.statements.insertAdminUser = this.db.prepare(`
+      INSERT INTO admin_users (
+        username,
+        password_hash,
+        role,
+        enabled,
+        failed_attempts,
+        locked_until,
+        last_login_at,
+        created_at,
+        updated_at
+      )
+      VALUES (
+        @username,
+        @password_hash,
+        @role,
+        @enabled,
+        @failed_attempts,
+        @locked_until,
+        @last_login_at,
+        @created_at,
+        @updated_at
+      )
+      ON CONFLICT(username)
+      DO UPDATE SET
+        password_hash = excluded.password_hash,
+        role = excluded.role,
+        enabled = excluded.enabled,
+        updated_at = excluded.updated_at
+    `);
+
+    this.statements.selectAdminUserByUsername = this.db.prepare(`
+      SELECT id, username, password_hash, role, enabled, failed_attempts, locked_until, last_login_at, created_at, updated_at
+      FROM admin_users
+      WHERE username = ?
+      LIMIT 1
+    `);
+
+    this.statements.selectAdminUsers = this.db.prepare(`
+      SELECT id, username, role, enabled, failed_attempts, locked_until, last_login_at, created_at, updated_at
+      FROM admin_users
+      ORDER BY
+        CASE role
+          WHEN 'owner' THEN 1
+          WHEN 'admin' THEN 2
+          WHEN 'editor' THEN 3
+          ELSE 4
+        END ASC,
+        username ASC
+    `);
+
+    this.statements.countAdminUsers = this.db.prepare(`
+      SELECT COUNT(*) AS total FROM admin_users
+    `);
+
+    this.statements.updateAdminUserSecurity = this.db.prepare(`
+      UPDATE admin_users
+      SET
+        failed_attempts = @failed_attempts,
+        locked_until = @locked_until,
+        last_login_at = @last_login_at,
+        updated_at = @updated_at
+      WHERE id = @id
+    `);
+
+    this.statements.updateAdminUser = this.db.prepare(`
+      UPDATE admin_users
+      SET
+        role = @role,
+        enabled = @enabled,
+        password_hash = @password_hash,
+        updated_at = @updated_at
+      WHERE id = @id
+    `);
+
+    this.statements.deleteAdminUserById = this.db.prepare(`
+      DELETE FROM admin_users WHERE id = ?
+    `);
+
+    this.statements.insertAuditLog = this.db.prepare(`
+      INSERT INTO audit_logs (
+        actor_username,
+        actor_role,
+        method,
+        path,
+        action,
+        resource,
+        status_code,
+        details,
+        created_at
+      )
+      VALUES (
+        @actor_username,
+        @actor_role,
+        @method,
+        @path,
+        @action,
+        @resource,
+        @status_code,
+        @details,
+        @created_at
+      )
+    `);
+
+    this.statements.selectAuditLogs = this.db.prepare(`
+      SELECT id, actor_username, actor_role, method, path, action, resource, status_code, details, created_at
+      FROM audit_logs
+      ORDER BY id DESC
+      LIMIT ?
+    `);
   }
 
   seedDefaultCommands() {
@@ -1629,11 +2057,45 @@ class TokenModel {
     return Boolean(row);
   }
 
+  buildEventUid({ network = '', hash = '', token = '', tokenAddress = '', logIndex = 0, eventUid = '' } = {}) {
+    const provided = String(eventUid || '').trim().toLowerCase();
+    if (provided) {
+      return provided;
+    }
+
+    const safeNetwork = String(network || '').trim().toLowerCase() || 'unknown';
+    const safeHash = String(hash || '').trim().toLowerCase() || 'unknown';
+    const safeToken = String(tokenAddress || token || '').trim().toLowerCase() || 'unknown';
+    const safeLogIndex = Math.max(0, Number(logIndex) || 0);
+
+    return `${safeNetwork}:${safeHash}:${safeToken}:${safeLogIndex}`;
+  }
+
+  hasTransactionByEventUid(eventUid) {
+    const safe = String(eventUid || '').trim().toLowerCase();
+    if (!safe) {
+      return false;
+    }
+    const row = this.statements.hasTransactionByEventUid.get(safe);
+    return Boolean(row);
+  }
+
   saveTransaction(transaction) {
+    const eventUid = this.buildEventUid({
+      network: transaction.network,
+      hash: transaction.hash,
+      token: transaction.token,
+      tokenAddress: transaction.tokenAddress,
+      logIndex: transaction.log_index,
+      eventUid: transaction.event_uid
+    });
+
     const payload = {
       token: String(transaction.token),
       network: String(transaction.network),
       hash: String(transaction.hash),
+      log_index: Math.max(0, Number(transaction.log_index) || 0),
+      event_uid: eventUid,
       buyer: String(transaction.buyer),
       amount: Number(transaction.amount),
       usd_value: Number(transaction.usd_value),
@@ -1658,6 +2120,11 @@ class TokenModel {
   getRecentTransactions(limit = 100) {
     const safeLimit = Math.max(1, Math.min(Number(limit) || 100, 500));
     return this.statements.selectRecentTransactions.all(safeLimit);
+  }
+
+  countTransactions() {
+    const row = this.statements.countTransactions.get();
+    return Math.max(0, Number(row?.total || 0));
   }
 
   getTopMembers({ days = 30, limit = 200 } = {}) {
@@ -2412,6 +2879,512 @@ class TokenModel {
     });
 
     return this.getBroadcastMessageById(id);
+  }
+
+  ping() {
+    const row = this.db.prepare('SELECT 1 AS ok').get();
+    return Number(row?.ok || 0) === 1;
+  }
+
+  normalizeDeliveryHealthRow(row) {
+    if (!row) {
+      return null;
+    }
+
+    return {
+      chat_id: String(row.chat_id || '').trim(),
+      consecutive_failures: Math.max(0, Number(row.consecutive_failures) || 0),
+      total_failures: Math.max(0, Number(row.total_failures) || 0),
+      total_success: Math.max(0, Number(row.total_success) || 0),
+      last_error: String(row.last_error || ''),
+      last_error_code: String(row.last_error_code || ''),
+      last_error_at: row.last_error_at || null,
+      last_success_at: row.last_success_at || null,
+      auto_disabled_at: row.auto_disabled_at || null,
+      updated_at: row.updated_at || null
+    };
+  }
+
+  getGroupDeliveryHealth(chatId) {
+    const safeChatId = String(chatId || '').trim();
+    if (!safeChatId) {
+      return null;
+    }
+
+    const row = this.statements.selectGroupDeliveryHealthByChat.get(safeChatId);
+    if (row) {
+      return this.normalizeDeliveryHealthRow(row);
+    }
+
+    const now = new Date().toISOString();
+    this.statements.upsertGroupDeliveryHealth.run({
+      chat_id: safeChatId,
+      consecutive_failures: 0,
+      total_failures: 0,
+      total_success: 0,
+      last_error: '',
+      last_error_code: '',
+      last_error_at: null,
+      last_success_at: null,
+      auto_disabled_at: null,
+      updated_at: now
+    });
+    return this.normalizeDeliveryHealthRow(this.statements.selectGroupDeliveryHealthByChat.get(safeChatId));
+  }
+
+  listGroupDeliveryHealth() {
+    return this.statements.selectAllGroupDeliveryHealth.all().map((row) => this.normalizeDeliveryHealthRow(row));
+  }
+
+  registerGroupDeliverySuccess(chatId) {
+    const current = this.getGroupDeliveryHealth(chatId);
+    if (!current) {
+      return null;
+    }
+
+    const now = new Date().toISOString();
+    this.statements.upsertGroupDeliveryHealth.run({
+      ...current,
+      consecutive_failures: 0,
+      total_success: current.total_success + 1,
+      last_success_at: now,
+      updated_at: now
+    });
+
+    return this.getGroupDeliveryHealth(chatId);
+  }
+
+  registerGroupDeliveryFailure(chatId, { error = '', errorCode = '' } = {}) {
+    const current = this.getGroupDeliveryHealth(chatId);
+    if (!current) {
+      return null;
+    }
+
+    const now = new Date().toISOString();
+    this.statements.upsertGroupDeliveryHealth.run({
+      ...current,
+      consecutive_failures: current.consecutive_failures + 1,
+      total_failures: current.total_failures + 1,
+      last_error: String(error || '').slice(0, 500),
+      last_error_code: String(errorCode || '').slice(0, 100),
+      last_error_at: now,
+      updated_at: now
+    });
+
+    return this.getGroupDeliveryHealth(chatId);
+  }
+
+  markGroupDeliveryAutoDisabled(chatId) {
+    const current = this.getGroupDeliveryHealth(chatId);
+    if (!current) {
+      return null;
+    }
+    const now = new Date().toISOString();
+    this.statements.upsertGroupDeliveryHealth.run({
+      ...current,
+      auto_disabled_at: now,
+      updated_at: now
+    });
+    return this.getGroupDeliveryHealth(chatId);
+  }
+
+  normalizeIncidentPayload(input = {}) {
+    const incidentType = String(input.incident_type || input.type || '').trim().toLowerCase();
+    const severity = String(input.severity || 'medium').trim().toLowerCase();
+    const status = String(input.status || 'open').trim().toLowerCase();
+    const title = String(input.title || '').trim();
+    const message = String(input.message || '').trim();
+    const chatId = String(input.chat_id || input.chatId || '').trim();
+    const uniqueKey = String(input.unique_key || input.uniqueKey || '').trim().toLowerCase();
+
+    if (!incidentType) {
+      throw new Error('incident_type is required');
+    }
+    if (!title) {
+      throw new Error('incident title is required');
+    }
+    if (!ALLOWED_INCIDENT_STATUS.has(status)) {
+      throw new Error('invalid incident status');
+    }
+    if (!ALLOWED_INCIDENT_SEVERITY.has(severity)) {
+      throw new Error('invalid incident severity');
+    }
+
+    return {
+      unique_key: uniqueKey || null,
+      incident_type: incidentType,
+      severity,
+      status,
+      title,
+      message,
+      chat_id: chatId,
+      context: JSON.stringify(this.normalizeJsonObject(input.context, {})),
+      created_at: input.created_at ? new Date(input.created_at).toISOString() : new Date().toISOString(),
+      updated_at: input.updated_at ? new Date(input.updated_at).toISOString() : new Date().toISOString(),
+      resolved_at: input.resolved_at ? new Date(input.resolved_at).toISOString() : null
+    };
+  }
+
+  normalizeIncidentRow(row) {
+    if (!row) {
+      return null;
+    }
+
+    return {
+      id: Number(row.id),
+      unique_key: row.unique_key || '',
+      incident_type: String(row.incident_type || ''),
+      severity: String(row.severity || 'medium'),
+      status: String(row.status || 'open'),
+      title: String(row.title || ''),
+      message: String(row.message || ''),
+      chat_id: String(row.chat_id || ''),
+      context: this.normalizeJsonObject(row.context, {}),
+      created_at: row.created_at || null,
+      updated_at: row.updated_at || null,
+      resolved_at: row.resolved_at || null
+    };
+  }
+
+  createIncident(input = {}) {
+    const payload = this.normalizeIncidentPayload(input);
+    const result = this.statements.insertIncident.run(payload);
+    return this.getIncidentById(result.lastInsertRowid);
+  }
+
+  createIncidentIfNotOpen(input = {}) {
+    const uniqueKey = String(input.unique_key || input.uniqueKey || '').trim().toLowerCase();
+    if (uniqueKey) {
+      const existing = this.statements.selectOpenIncidentByUniqueKey.get(uniqueKey);
+      if (existing) {
+        return this.normalizeIncidentRow(existing);
+      }
+    }
+    return this.createIncident(input);
+  }
+
+  getIncidentById(id) {
+    return this.normalizeIncidentRow(this.statements.selectIncidentById.get(Number(id)) || null);
+  }
+
+  listIncidents({ status = '', limit = 100 } = {}) {
+    const safeLimit = Math.max(1, Math.min(Number(limit) || 100, 1000));
+    const safeStatus = String(status || '').trim().toLowerCase();
+    if (safeStatus && ALLOWED_INCIDENT_STATUS.has(safeStatus)) {
+      return this.statements.selectIncidentsByStatus.all(safeStatus, safeLimit).map((row) => this.normalizeIncidentRow(row));
+    }
+    return this.statements.selectIncidents.all(safeLimit).map((row) => this.normalizeIncidentRow(row));
+  }
+
+  setIncidentStatus(id, status, { resolvedAt } = {}) {
+    const current = this.getIncidentById(id);
+    if (!current) {
+      return null;
+    }
+
+    const normalized = String(status || '').trim().toLowerCase();
+    if (!ALLOWED_INCIDENT_STATUS.has(normalized)) {
+      throw new Error('invalid incident status');
+    }
+
+    const isResolved = normalized === 'resolved' || normalized === 'ignored';
+    this.statements.updateIncidentStatus.run({
+      id: Number(id),
+      status: normalized,
+      updated_at: new Date().toISOString(),
+      resolved_at: isResolved ? (resolvedAt ? new Date(resolvedAt).toISOString() : new Date().toISOString()) : null
+    });
+
+    return this.getIncidentById(id);
+  }
+
+  countOpenIncidents() {
+    const row = this.statements.countOpenIncidents.get();
+    return Math.max(0, Number(row?.total || 0));
+  }
+
+  enqueuePendingJob(input = {}) {
+    const jobType = String(input.job_type || input.jobType || '').trim().toLowerCase();
+    if (!jobType) {
+      throw new Error('job_type is required');
+    }
+
+    const payload =
+      typeof input.payload === 'string' ? input.payload : JSON.stringify(input.payload === undefined ? {} : input.payload);
+    const now = new Date().toISOString();
+    const availableAt = input.available_at
+      ? new Date(input.available_at).toISOString()
+      : input.availableAt
+        ? new Date(input.availableAt).toISOString()
+        : now;
+
+    const result = this.statements.insertPendingJob.run({
+      job_type: jobType,
+      payload,
+      status: 'queued',
+      attempts: Math.max(0, Number(input.attempts) || 0),
+      available_at: availableAt,
+      locked_at: null,
+      last_error: String(input.last_error || ''),
+      created_at: now,
+      updated_at: now
+    });
+
+    return this.getPendingJobById(result.lastInsertRowid);
+  }
+
+  getPendingJobById(id) {
+    return this.statements.selectPendingJobById.get(Number(id)) || null;
+  }
+
+  claimPendingJobs(jobType, limit = 50) {
+    const safeType = String(jobType || '').trim().toLowerCase();
+    if (!safeType) {
+      return [];
+    }
+
+    const safeLimit = Math.max(1, Math.min(Number(limit) || 50, 500));
+    const nowIso = new Date().toISOString();
+
+    const tx = this.db.transaction(() => {
+      const rows = this.statements.selectPendingJobsForClaim.all(safeType, nowIso, safeLimit);
+      const claimed = [];
+
+      for (const row of rows) {
+        const updated = this.statements.markPendingJobProcessing.run(nowIso, nowIso, Number(row.id));
+        if (updated.changes > 0) {
+          claimed.push({
+            ...row,
+            status: 'processing',
+            locked_at: nowIso,
+            updated_at: nowIso
+          });
+        }
+      }
+
+      return claimed;
+    });
+
+    return tx();
+  }
+
+  markPendingJobDone(id) {
+    const result = this.statements.deletePendingJobById.run(Number(id));
+    return result.changes > 0;
+  }
+
+  markPendingJobRetry(id, errorMessage, retryDelayMs = 5000) {
+    const current = this.getPendingJobById(id);
+    if (!current) {
+      return false;
+    }
+
+    const attempts = Math.max(0, Number(current.attempts) || 0) + 1;
+    const nowMs = Date.now();
+    const delayMs = Math.max(0, Number(retryDelayMs) || 0);
+    const availableAt = new Date(nowMs + delayMs).toISOString();
+    const nowIso = new Date(nowMs).toISOString();
+
+    this.statements.markPendingJobQueued.run(
+      attempts,
+      availableAt,
+      String(errorMessage || '').slice(0, 500),
+      nowIso,
+      Number(id)
+    );
+    return true;
+  }
+
+  requeueStalePendingJobs({ staleSeconds = 120 } = {}) {
+    const seconds = Math.max(15, Math.min(Number(staleSeconds) || 120, 3600));
+    const cutoff = new Date(Date.now() - seconds * 1000).toISOString();
+    const nowIso = new Date().toISOString();
+    const result = this.statements.requeueStalePendingJobs.run(nowIso, cutoff);
+    return Math.max(0, Number(result?.changes || 0));
+  }
+
+  getPendingJobStats() {
+    const row = this.statements.selectPendingJobStats.get() || {};
+    return {
+      queued: Math.max(0, Number(row.queued || 0)),
+      processing: Math.max(0, Number(row.processing || 0)),
+      failed: Math.max(0, Number(row.failed || 0)),
+      total: Math.max(0, Number(row.total || 0))
+    };
+  }
+
+  hashAdminPassword(password) {
+    const safePassword = String(password || '');
+    if (!safePassword) {
+      throw new Error('admin password is required');
+    }
+
+    const salt = crypto.randomBytes(16).toString('hex');
+    const digest = crypto.scryptSync(safePassword, salt, 64).toString('hex');
+    return `scrypt$${salt}$${digest}`;
+  }
+
+  verifyAdminPassword(password, passwordHash) {
+    const safePassword = String(password || '');
+    const rawHash = String(passwordHash || '');
+    const parts = rawHash.split('$');
+    if (parts.length !== 3 || parts[0] !== 'scrypt') {
+      return false;
+    }
+
+    const salt = parts[1];
+    const expectedHex = parts[2];
+    if (!salt || !expectedHex) {
+      return false;
+    }
+
+    const actual = crypto.scryptSync(safePassword, salt, 64).toString('hex');
+    const a = Buffer.from(actual, 'hex');
+    const b = Buffer.from(expectedHex, 'hex');
+    if (a.length !== b.length) {
+      return false;
+    }
+    return crypto.timingSafeEqual(a, b);
+  }
+
+  hasAdminUsers() {
+    const row = this.statements.countAdminUsers.get();
+    return Math.max(0, Number(row?.total || 0)) > 0;
+  }
+
+  upsertAdminUser(input = {}) {
+    const username = String(input.username || '').trim().toLowerCase();
+    if (!username) {
+      throw new Error('admin username is required');
+    }
+
+    const role = String(input.role || 'viewer').trim().toLowerCase();
+    if (!ALLOWED_ADMIN_ROLE.has(role)) {
+      throw new Error('invalid admin role');
+    }
+
+    const enabled = input.enabled === undefined ? true : Boolean(input.enabled);
+    let passwordHash = String(input.password_hash || input.passwordHash || '').trim();
+    const password = String(input.password || '').trim();
+
+    const current = this.getAdminUserByUsername(username);
+    if (!passwordHash) {
+      if (password) {
+        passwordHash = this.hashAdminPassword(password);
+      } else if (current?.password_hash) {
+        passwordHash = current.password_hash;
+      }
+    }
+
+    if (!passwordHash) {
+      throw new Error('admin password is required');
+    }
+
+    const now = new Date().toISOString();
+    this.statements.insertAdminUser.run({
+      username,
+      password_hash: passwordHash,
+      role,
+      enabled: enabled ? 1 : 0,
+      failed_attempts: current ? Math.max(0, Number(current.failed_attempts) || 0) : 0,
+      locked_until: current?.locked_until || null,
+      last_login_at: current?.last_login_at || null,
+      created_at: current?.created_at || now,
+      updated_at: now
+    });
+
+    return this.getAdminUserByUsername(username);
+  }
+
+  getAdminUserByUsername(username) {
+    const safe = String(username || '').trim().toLowerCase();
+    if (!safe) {
+      return null;
+    }
+    return this.statements.selectAdminUserByUsername.get(safe) || null;
+  }
+
+  listAdminUsers() {
+    return this.statements.selectAdminUsers.all();
+  }
+
+  setAdminUserSecurity(id, { failed_attempts, locked_until, last_login_at } = {}) {
+    const user = this.listAdminUsers().find((item) => Number(item.id) === Number(id));
+    if (!user) {
+      return null;
+    }
+    const now = new Date().toISOString();
+    this.statements.updateAdminUserSecurity.run({
+      id: Number(id),
+      failed_attempts: Math.max(0, Number(failed_attempts === undefined ? user.failed_attempts : failed_attempts) || 0),
+      locked_until: locked_until ? new Date(locked_until).toISOString() : null,
+      last_login_at: last_login_at ? new Date(last_login_at).toISOString() : null,
+      updated_at: now
+    });
+    return this.getAdminUserByUsername(user.username);
+  }
+
+  setAdminUser(id, changes = {}) {
+    const current = this.listAdminUsers().find((item) => Number(item.id) === Number(id));
+    if (!current) {
+      return null;
+    }
+
+    const role = changes.role ? String(changes.role).trim().toLowerCase() : String(current.role || 'viewer').toLowerCase();
+    if (!ALLOWED_ADMIN_ROLE.has(role)) {
+      throw new Error('invalid admin role');
+    }
+
+    let passwordHash = '';
+    if (changes.password !== undefined && String(changes.password || '').trim()) {
+      passwordHash = this.hashAdminPassword(changes.password);
+    } else if (changes.password_hash || changes.passwordHash) {
+      passwordHash = String(changes.password_hash || changes.passwordHash || '').trim();
+    } else {
+      const currentWithHash = this.getAdminUserByUsername(current.username);
+      passwordHash = String(currentWithHash?.password_hash || '').trim();
+    }
+
+    const enabled = changes.enabled === undefined ? current.enabled === 1 : Boolean(changes.enabled);
+
+    this.statements.updateAdminUser.run({
+      id: Number(id),
+      role,
+      enabled: enabled ? 1 : 0,
+      password_hash: passwordHash,
+      updated_at: new Date().toISOString()
+    });
+
+    return this.getAdminUserByUsername(current.username);
+  }
+
+  deleteAdminUserById(id) {
+    const result = this.statements.deleteAdminUserById.run(Number(id));
+    return result.changes > 0;
+  }
+
+  addAuditLog(input = {}) {
+    const payload = {
+      actor_username: String(input.actor_username || input.actorUsername || '').trim(),
+      actor_role: String(input.actor_role || input.actorRole || '').trim().toLowerCase(),
+      method: String(input.method || '').trim().toUpperCase(),
+      path: String(input.path || '').trim(),
+      action: String(input.action || '').trim(),
+      resource: String(input.resource || '').trim(),
+      status_code: Math.max(0, Number(input.status_code || input.statusCode || 0) || 0),
+      details: JSON.stringify(this.normalizeJsonObject(input.details, {})),
+      created_at: input.created_at ? new Date(input.created_at).toISOString() : new Date().toISOString()
+    };
+
+    this.statements.insertAuditLog.run(payload);
+    return payload;
+  }
+
+  listAuditLogs(limit = 200) {
+    const safeLimit = Math.max(1, Math.min(Number(limit) || 200, 2000));
+    return this.statements.selectAuditLogs
+      .all(safeLimit)
+      .map((row) => ({ ...row, details: this.normalizeJsonObject(row.details, {}) }));
   }
 
   normalizeGroupLocksRow(row, chatId = '') {

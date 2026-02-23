@@ -173,6 +173,8 @@ const DEFAULT_GROUP_PERMISSIONS = [
   'advanced'
 ];
 const GROUP_LOCK_KEYS = ['antispam', 'antilink', 'antiflood', 'captcha', 'antiraid'];
+const ADMIN_ROLE_ORDER = ['viewer', 'editor', 'admin', 'owner'];
+const ALLOWED_ADMIN_ROLE = new Set(ADMIN_ROLE_ORDER);
 
 const normalizeGroupPermissions = (value) => {
   if (Array.isArray(value)) {
@@ -322,12 +324,22 @@ const shortWallet = (value) => {
   return `${raw.slice(0, 4)}...${raw.slice(-4)}`;
 };
 
-const createAuthMiddleware = ({ username, password, logger }) => {
-  const authEnabled = Boolean(username && password);
+const createAuthMiddleware = ({ username, password, tokenModel, logger }) => {
+  const envAuthEnabled = Boolean(username && password);
+  const maxAttempts = Math.max(3, Number(process.env.ADMIN_MAX_ATTEMPTS || 5) || 5);
+  const lockMinutes = Math.max(1, Number(process.env.ADMIN_LOCK_MINUTES || 15) || 15);
 
-  if (!authEnabled) {
-    logger.warn('ADMIN_USER/ADMIN_PASSWORD not set; dashboard auth disabled');
-    return (_req, _res, next) => next();
+  if (!envAuthEnabled && !tokenModel.hasAdminUsers()) {
+    logger.warn('ADMIN_USER/ADMIN_PASSWORD not set and no admin users in DB; dashboard auth disabled');
+    return (req, _res, next) => {
+      req.admin = {
+        id: 0,
+        username: 'local',
+        role: 'owner',
+        authSource: 'disabled'
+      };
+      next();
+    };
   }
 
   const safeEquals = (left, right) => {
@@ -341,34 +353,360 @@ const createAuthMiddleware = ({ username, password, logger }) => {
     return crypto.timingSafeEqual(a, b);
   };
 
-  return (req, res, next) => {
-    const authHeader = req.headers.authorization || '';
-    if (!authHeader.startsWith('Basic ')) {
-      res.setHeader('WWW-Authenticate', 'Basic realm="Buy Alerts Admin"');
-      return res.status(401).json({ error: 'authentication required' });
+  const parseBasicAuth = (authHeader) => {
+    if (!String(authHeader || '').startsWith('Basic ')) {
+      return null;
     }
 
-    let decoded;
+    let decoded = '';
     try {
-      decoded = Buffer.from(authHeader.slice(6), 'base64').toString('utf8');
+      decoded = Buffer.from(String(authHeader).slice(6), 'base64').toString('utf8');
     } catch (_error) {
-      return res.status(401).json({ error: 'invalid auth header' });
+      return null;
     }
 
     const separator = decoded.indexOf(':');
     if (separator < 0) {
-      return res.status(401).json({ error: 'invalid auth format' });
+      return null;
     }
 
-    const incomingUser = decoded.slice(0, separator);
-    const incomingPass = decoded.slice(separator + 1);
+    return {
+      username: decoded.slice(0, separator),
+      password: decoded.slice(separator + 1)
+    };
+  };
 
-    if (!safeEquals(incomingUser, username) || !safeEquals(incomingPass, password)) {
+  return (req, res, next) => {
+    const parsed = parseBasicAuth(req.headers.authorization || '');
+    if (!parsed) {
+      res.setHeader('WWW-Authenticate', 'Basic realm="Buy Alerts Admin"');
+      return res.status(401).json({ error: 'authentication required' });
+    }
+
+    const incomingUser = String(parsed.username || '').trim().toLowerCase();
+    const incomingPass = String(parsed.password || '');
+    if (!incomingUser || !incomingPass) {
       return res.status(401).json({ error: 'invalid credentials' });
     }
 
+    if (tokenModel.hasAdminUsers()) {
+      const dbUser = tokenModel.getAdminUserByUsername(incomingUser);
+      if (!dbUser || dbUser.enabled !== 1) {
+        return res.status(401).json({ error: 'invalid credentials' });
+      }
+
+      const lockedUntilMs = dbUser.locked_until ? new Date(dbUser.locked_until).getTime() : 0;
+      if (Number.isFinite(lockedUntilMs) && lockedUntilMs > Date.now()) {
+        return res.status(423).json({ error: 'admin account temporarily locked' });
+      }
+
+      const validPassword = tokenModel.verifyAdminPassword(incomingPass, dbUser.password_hash);
+      if (!validPassword) {
+        const failedAttempts = Math.max(0, Number(dbUser.failed_attempts) || 0) + 1;
+        const shouldLock = failedAttempts >= maxAttempts;
+        const lockedUntil = shouldLock ? new Date(Date.now() + lockMinutes * 60 * 1000).toISOString() : null;
+        tokenModel.setAdminUserSecurity(dbUser.id, {
+          failed_attempts: failedAttempts,
+          locked_until: lockedUntil,
+          last_login_at: dbUser.last_login_at || null
+        });
+
+        if (shouldLock) {
+          tokenModel.createIncidentIfNotOpen({
+            unique_key: `admin-lock:${incomingUser}`,
+            incident_type: 'admin_lockout',
+            severity: 'high',
+            title: `Conta admin bloqueada: ${incomingUser}`,
+            message: `Excesso de tentativas falhas de login (${failedAttempts}).`,
+            context: {
+              username: incomingUser,
+              failedAttempts,
+              lockMinutes
+            }
+          });
+        }
+
+        return res.status(401).json({ error: 'invalid credentials' });
+      }
+
+      tokenModel.setAdminUserSecurity(dbUser.id, {
+        failed_attempts: 0,
+        locked_until: null,
+        last_login_at: new Date().toISOString()
+      });
+
+      req.admin = {
+        id: dbUser.id,
+        username: dbUser.username,
+        role: String(dbUser.role || 'viewer').toLowerCase(),
+        authSource: 'database'
+      };
+      return next();
+    }
+
+    if (!envAuthEnabled) {
+      return res.status(401).json({ error: 'invalid credentials' });
+    }
+
+    if (!safeEquals(incomingUser, String(username).toLowerCase()) || !safeEquals(incomingPass, password)) {
+      return res.status(401).json({ error: 'invalid credentials' });
+    }
+
+    req.admin = {
+      id: 0,
+      username: incomingUser,
+      role: 'owner',
+      authSource: 'env'
+    };
+
     return next();
   };
+};
+
+const hasRole = (role, minimumRole) => {
+  const currentIndex = ADMIN_ROLE_ORDER.indexOf(String(role || '').toLowerCase());
+  const requiredIndex = ADMIN_ROLE_ORDER.indexOf(String(minimumRole || '').toLowerCase());
+  if (currentIndex < 0 || requiredIndex < 0) {
+    return false;
+  }
+  return currentIndex >= requiredIndex;
+};
+
+const requireRole = (minimumRole) => (req, res, next) => {
+  const role = String(req.admin?.role || '').toLowerCase();
+  if (!hasRole(role, minimumRole)) {
+    return res.status(403).json({ error: `insufficient role; requires ${minimumRole}` });
+  }
+  return next();
+};
+
+const normalizeAdminRole = (value, fallback = 'viewer') => {
+  const role = String(value || '')
+    .trim()
+    .toLowerCase();
+  if (ALLOWED_ADMIN_ROLE.has(role)) {
+    return role;
+  }
+  return fallback;
+};
+
+const sanitizeAdminUserForResponse = (row) => {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: Number(row.id),
+    username: String(row.username || ''),
+    role: normalizeAdminRole(row.role, 'viewer'),
+    enabled: Number(row.enabled) === 1,
+    failed_attempts: Math.max(0, Number(row.failed_attempts) || 0),
+    locked_until: row.locked_until || null,
+    last_login_at: row.last_login_at || null,
+    created_at: row.created_at || null,
+    updated_at: row.updated_at || null
+  };
+};
+
+const buildRuntimeState = ({
+  runtimeStateProvider,
+  tokenModel,
+  queueService,
+  schedulerService,
+  telegramClient,
+  enabledNetworks
+}) => {
+  let provided = {};
+  if (typeof runtimeStateProvider === 'function') {
+    try {
+      provided = runtimeStateProvider() || {};
+    } catch (_error) {
+      provided = {};
+    }
+  }
+
+  const listeners = Array.isArray(provided.listeners) ? provided.listeners : [];
+  return {
+    uptimeSec: Math.max(0, Number(provided.uptimeSec || Math.floor(process.uptime())) || 0),
+    db: {
+      ok: provided.db?.ok === undefined ? tokenModel.ping() : Boolean(provided.db.ok),
+      transactions: Math.max(
+        0,
+        Number(
+          provided.db?.transactions === undefined ? tokenModel.countTransactions() : Number(provided.db.transactions)
+        ) || 0
+      )
+    },
+    incidents: {
+      open: Math.max(
+        0,
+        Number(provided.incidents?.open === undefined ? tokenModel.countOpenIncidents() : provided.incidents.open) || 0
+      )
+    },
+    queue:
+      provided.queue && typeof provided.queue === 'object'
+        ? provided.queue
+        : typeof queueService.getStatus === 'function'
+          ? queueService.getStatus()
+          : {},
+    scheduler:
+      provided.scheduler && typeof provided.scheduler === 'object'
+        ? provided.scheduler
+        : typeof schedulerService.getStatus === 'function'
+          ? schedulerService.getStatus()
+          : { running: Boolean(schedulerService?.running) },
+    telegram:
+      provided.telegram && typeof provided.telegram === 'object'
+        ? provided.telegram
+        : typeof telegramClient.getStatus === 'function'
+          ? telegramClient.getStatus()
+          : { botAvailable: Boolean(telegramClient?.bot), ready: false },
+    listeners,
+    enabledNetworks: Array.isArray(enabledNetworks) ? [...enabledNetworks] : []
+  };
+};
+
+const buildReadinessReport = (runtimeState) => {
+  const checks = [];
+  const addCheck = (name, pass, details = {}) => {
+    checks.push({
+      name,
+      pass: Boolean(pass),
+      details
+    });
+  };
+
+  addCheck('db', runtimeState.db?.ok === true, { transactions: runtimeState.db?.transactions || 0 });
+
+  if (runtimeState.telegram?.botAvailable) {
+    addCheck('telegram', runtimeState.telegram?.ready === true, {
+      pollingEnabled: Boolean(runtimeState.telegram?.pollingEnabled),
+      pollingStarted: Boolean(runtimeState.telegram?.pollingStarted),
+      lastError: String(runtimeState.telegram?.lastPollingError || '')
+    });
+  } else {
+    addCheck('telegram', false, { reason: 'bot token missing' });
+  }
+
+  const listenersByNetwork = new Map();
+  for (const item of runtimeState.listeners || []) {
+    const key = String(item?.network || '').toLowerCase();
+    if (key) {
+      listenersByNetwork.set(key, item);
+    }
+  }
+
+  for (const networkKey of runtimeState.enabledNetworks || []) {
+    const listener = listenersByNetwork.get(String(networkKey || '').toLowerCase());
+    const running = Boolean(listener?.running);
+    addCheck(`listener_${networkKey}`, running, {
+      found: Boolean(listener),
+      type: listener?.type || '',
+      lastError: String(listener?.lastError || '')
+    });
+  }
+
+  const queuePendingFailed = Math.max(0, Number(runtimeState.queue?.pendingJobs?.failed || 0) || 0);
+  addCheck('queue_failed_jobs', queuePendingFailed === 0, {
+    failed: queuePendingFailed
+  });
+
+  const ready = checks.every((item) => item.pass);
+  return {
+    ready,
+    checks
+  };
+};
+
+const toPrometheusValue = (value) => (Number.isFinite(Number(value)) ? Number(value) : 0);
+
+const renderMetrics = (runtimeState, readiness) => {
+  const queue = runtimeState.queue || {};
+  const pendingJobs = queue.pendingJobs || {};
+  const metrics = queue.metrics || {};
+  const scheduler = runtimeState.scheduler || {};
+  const telegram = runtimeState.telegram || {};
+  const listeners = Array.isArray(runtimeState.listeners) ? runtimeState.listeners : [];
+
+  const lines = [
+    '# HELP buy_alert_ready Application readiness state (1 ready, 0 not ready).',
+    '# TYPE buy_alert_ready gauge',
+    `buy_alert_ready ${readiness.ready ? 1 : 0}`,
+    '# HELP buy_alert_uptime_seconds Process uptime in seconds.',
+    '# TYPE buy_alert_uptime_seconds gauge',
+    `buy_alert_uptime_seconds ${toPrometheusValue(runtimeState.uptimeSec)}`,
+    '# HELP buy_alert_db_ok Database health check (1 ok, 0 fail).',
+    '# TYPE buy_alert_db_ok gauge',
+    `buy_alert_db_ok ${runtimeState.db?.ok ? 1 : 0}`,
+    '# HELP buy_alert_transactions_total Total transactions persisted.',
+    '# TYPE buy_alert_transactions_total gauge',
+    `buy_alert_transactions_total ${toPrometheusValue(runtimeState.db?.transactions)}`,
+    '# HELP buy_alert_incidents_open Open incidents count.',
+    '# TYPE buy_alert_incidents_open gauge',
+    `buy_alert_incidents_open ${toPrometheusValue(runtimeState.incidents?.open)}`,
+    '# HELP buy_alert_queue_processing_pending Queue processing workers currently running.',
+    '# TYPE buy_alert_queue_processing_pending gauge',
+    `buy_alert_queue_processing_pending ${toPrometheusValue(queue.processPending)}`,
+    '# HELP buy_alert_queue_processing_size Queue processing backlog size.',
+    '# TYPE buy_alert_queue_processing_size gauge',
+    `buy_alert_queue_processing_size ${toPrometheusValue(queue.processSize)}`,
+    '# HELP buy_alert_queue_telegram_pending Telegram queue workers currently running.',
+    '# TYPE buy_alert_queue_telegram_pending gauge',
+    `buy_alert_queue_telegram_pending ${toPrometheusValue(queue.telegramPending)}`,
+    '# HELP buy_alert_queue_telegram_size Telegram queue backlog size.',
+    '# TYPE buy_alert_queue_telegram_size gauge',
+    `buy_alert_queue_telegram_size ${toPrometheusValue(queue.telegramSize)}`,
+    '# HELP buy_alert_pending_jobs_queued Pending jobs queued.',
+    '# TYPE buy_alert_pending_jobs_queued gauge',
+    `buy_alert_pending_jobs_queued ${toPrometheusValue(pendingJobs.queued)}`,
+    '# HELP buy_alert_pending_jobs_processing Pending jobs in processing.',
+    '# TYPE buy_alert_pending_jobs_processing gauge',
+    `buy_alert_pending_jobs_processing ${toPrometheusValue(pendingJobs.processing)}`,
+    '# HELP buy_alert_pending_jobs_failed Pending jobs failed.',
+    '# TYPE buy_alert_pending_jobs_failed gauge',
+    `buy_alert_pending_jobs_failed ${toPrometheusValue(pendingJobs.failed)}`,
+    '# HELP buy_alert_job_metrics_claimed_total Claimed job count.',
+    '# TYPE buy_alert_job_metrics_claimed_total counter',
+    `buy_alert_job_metrics_claimed_total ${toPrometheusValue(metrics.jobsClaimed)}`,
+    '# HELP buy_alert_job_metrics_processed_total Processed job count.',
+    '# TYPE buy_alert_job_metrics_processed_total counter',
+    `buy_alert_job_metrics_processed_total ${toPrometheusValue(metrics.jobsProcessed)}`,
+    '# HELP buy_alert_job_metrics_retried_total Retried job count.',
+    '# TYPE buy_alert_job_metrics_retried_total counter',
+    `buy_alert_job_metrics_retried_total ${toPrometheusValue(metrics.jobsRetried)}`,
+    '# HELP buy_alert_job_metrics_discarded_total Discarded job count.',
+    '# TYPE buy_alert_job_metrics_discarded_total counter',
+    `buy_alert_job_metrics_discarded_total ${toPrometheusValue(metrics.jobsDiscarded)}`,
+    '# HELP buy_alert_alerts_delivered_total Delivered alerts.',
+    '# TYPE buy_alert_alerts_delivered_total counter',
+    `buy_alert_alerts_delivered_total ${toPrometheusValue(metrics.alertsDelivered)}`,
+    '# HELP buy_alert_alerts_failed_total Failed alerts.',
+    '# TYPE buy_alert_alerts_failed_total counter',
+    `buy_alert_alerts_failed_total ${toPrometheusValue(metrics.alertsFailed)}`,
+    '# HELP buy_alert_scheduler_running Scheduler running status.',
+    '# TYPE buy_alert_scheduler_running gauge',
+    `buy_alert_scheduler_running ${scheduler.running ? 1 : 0}`,
+    '# HELP buy_alert_scheduler_processing Current processing schedules.',
+    '# TYPE buy_alert_scheduler_processing gauge',
+    `buy_alert_scheduler_processing ${toPrometheusValue(scheduler.processing)}`,
+    '# HELP buy_alert_telegram_ready Telegram client ready status.',
+    '# TYPE buy_alert_telegram_ready gauge',
+    `buy_alert_telegram_ready ${telegram.ready ? 1 : 0}`,
+    '# HELP buy_alert_telegram_polling_started Telegram polling running status.',
+    '# TYPE buy_alert_telegram_polling_started gauge',
+    `buy_alert_telegram_polling_started ${telegram.pollingStarted ? 1 : 0}`
+  ];
+
+  lines.push('# HELP buy_alert_listener_running Listener running state by network.');
+  lines.push('# TYPE buy_alert_listener_running gauge');
+  for (const listener of listeners) {
+    const network = String(listener?.network || 'unknown').replace(/"/g, '\\"');
+    const type = String(listener?.type || 'unknown').replace(/"/g, '\\"');
+    const running = listener?.running ? 1 : 0;
+    lines.push(`buy_alert_listener_running{network="${network}",type="${type}"} ${running}`);
+  }
+
+  return `${lines.join('\n')}\n`;
 };
 
 const asyncRoute = (handler) => (req, res, next) => {
@@ -689,6 +1027,7 @@ const startAdminServer = async ({
   schedulerService,
   logger,
   enabledNetworks,
+  runtimeStateProvider = null,
   host = process.env.ADMIN_HOST || '0.0.0.0',
   port = Number(process.env.ADMIN_PORT || 8787)
 }) => {
@@ -696,6 +1035,7 @@ const startAdminServer = async ({
   const authMiddleware = createAuthMiddleware({
     username: process.env.ADMIN_USER || '',
     password: process.env.ADMIN_PASSWORD || '',
+    tokenModel,
     logger
   });
   const corsOrigins = parseCorsOrigins(process.env.CORS_ORIGINS || '');
@@ -731,16 +1071,98 @@ const startAdminServer = async ({
   });
 
   app.get('/healthz', (_req, res) => {
-    res.json({ ok: true, service: 'buy-alert-admin' });
+    const runtimeState = buildRuntimeState({
+      runtimeStateProvider,
+      tokenModel,
+      queueService,
+      schedulerService,
+      telegramClient,
+      enabledNetworks
+    });
+    res.json({
+      ok: true,
+      service: 'buy-alert-admin',
+      uptimeSec: runtimeState.uptimeSec
+    });
+  });
+
+  app.get('/readyz', (_req, res) => {
+    const runtimeState = buildRuntimeState({
+      runtimeStateProvider,
+      tokenModel,
+      queueService,
+      schedulerService,
+      telegramClient,
+      enabledNetworks
+    });
+    const readiness = buildReadinessReport(runtimeState);
+
+    if (!readiness.ready) {
+      return res.status(503).json({
+        ok: false,
+        ...readiness,
+        runtime: runtimeState
+      });
+    }
+
+    return res.json({
+      ok: true,
+      ...readiness,
+      runtime: runtimeState
+    });
+  });
+
+  app.get('/metrics', (_req, res) => {
+    const runtimeState = buildRuntimeState({
+      runtimeStateProvider,
+      tokenModel,
+      queueService,
+      schedulerService,
+      telegramClient,
+      enabledNetworks
+    });
+    const readiness = buildReadinessReport(runtimeState);
+    res.setHeader('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
+    res.send(renderMetrics(runtimeState, readiness));
   });
 
   app.use('/uploads', express.static(uploadsDir, { maxAge: '30d', etag: true, index: false }));
 
   app.use((req, res, next) => {
-    if (req.path === '/healthz' || req.path.startsWith('/uploads/')) {
+    if (req.path === '/healthz' || req.path === '/readyz' || req.path === '/metrics' || req.path.startsWith('/uploads/')) {
       return next();
     }
     return authMiddleware(req, res, next);
+  });
+
+  app.use('/api', (req, res, next) => {
+    if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') {
+      return next();
+    }
+    return requireRole('editor')(req, res, next);
+  });
+
+  app.use('/api', (req, res, next) => {
+    const startedAtMs = Date.now();
+    res.on('finish', () => {
+      try {
+        tokenModel.addAuditLog({
+          actor_username: req.admin?.username || '',
+          actor_role: req.admin?.role || '',
+          method: req.method,
+          path: req.originalUrl || req.path || '',
+          action: req.method,
+          resource: req.path || '',
+          status_code: res.statusCode,
+          details: {
+            latency_ms: Date.now() - startedAtMs
+          }
+        });
+      } catch (error) {
+        logger.warn({ err: error.message }, 'failed to write audit log');
+      }
+    });
+    return next();
   });
 
   app.get(
@@ -758,8 +1180,49 @@ const startAdminServer = async ({
   );
 
   app.get(
+    '/api/auth/session',
+    asyncRoute(async (req, res) => {
+      res.json({
+        admin: {
+          id: Number(req.admin?.id || 0),
+          username: String(req.admin?.username || ''),
+          role: normalizeAdminRole(req.admin?.role, 'viewer'),
+          source: String(req.admin?.authSource || 'unknown')
+        }
+      });
+    })
+  );
+
+  app.get(
+    '/api/runtime',
+    asyncRoute(async (_req, res) => {
+      const runtimeState = buildRuntimeState({
+        runtimeStateProvider,
+        tokenModel,
+        queueService,
+        schedulerService,
+        telegramClient,
+        enabledNetworks
+      });
+      const readiness = buildReadinessReport(runtimeState);
+      res.json({
+        readiness,
+        runtime: runtimeState
+      });
+    })
+  );
+
+  app.get(
     '/api/stats',
     asyncRoute(async (_req, res) => {
+      const runtimeState = buildRuntimeState({
+        runtimeStateProvider,
+        tokenModel,
+        queueService,
+        schedulerService,
+        telegramClient,
+        enabledNetworks
+      });
       const tokens = tokenModel.listTokens({ includeDisabled: true });
       const groups = tokenModel.listGroups({ includeDisabled: true });
       const recent = tokenModel.getRecentTransactions(40);
@@ -772,14 +1235,9 @@ const startAdminServer = async ({
       const sentBroadcasts = broadcasts.filter((item) => String(item.status || '').toLowerCase() === 'sent').length;
 
       res.json({
-        uptimeSec: Math.floor(process.uptime()),
+        uptimeSec: runtimeState.uptimeSec,
         minUsdAlert: queueService.getMinUsdAlert(),
-        queues: {
-          processPending: queueService.processingQueue.pending,
-          processSize: queueService.processingQueue.size,
-          telegramPending: queueService.telegramQueue.pending,
-          telegramSize: queueService.telegramQueue.size
-        },
+        queues: runtimeState.queue,
         tokens: {
           total: tokens.length,
           active: activeTokens
@@ -797,7 +1255,9 @@ const startAdminServer = async ({
           sent: sentBroadcasts
         },
         recentAlerts: recent.length,
-        schedulerRunning: Boolean(schedulerService?.running)
+        schedulerRunning: Boolean(runtimeState.scheduler?.running),
+        incidentsOpen: runtimeState.incidents?.open || 0,
+        telegramReady: Boolean(runtimeState.telegram?.ready)
       });
     })
   );
@@ -925,9 +1385,15 @@ const startAdminServer = async ({
       const includeDisabled = asBoolean(req.query.includeDisabled, true);
       const groups = tokenModel.listGroups({ includeDisabled });
       const memberCounts = tokenModel.getGroupMemberCounts();
+      const deliveryHealthRows = tokenModel.listGroupDeliveryHealth();
+      const deliveryByChatId = new Map(
+        deliveryHealthRows.map((item) => [String(item.chat_id || '').trim(), item])
+      );
       const normalizedGroups = groups.map((group) => ({
         ...group,
-        member_count: Math.max(0, Number(memberCounts[String(group.chat_id || '').trim()] || 0))
+        member_count: Math.max(0, Number(memberCounts[String(group.chat_id || '').trim()] || 0)),
+        delivery_health:
+          deliveryByChatId.get(String(group.chat_id || '').trim()) || tokenModel.getGroupDeliveryHealth(group.chat_id)
       }));
       res.json({ groups: normalizedGroups });
     })
@@ -1505,6 +1971,153 @@ const startAdminServer = async ({
           enabledNetworks
         }
       });
+    })
+  );
+
+  app.get(
+    '/api/incidents',
+    asyncRoute(async (req, res) => {
+      const limit = parsePositiveInt(req.query.limit, 100, 1000);
+      const status = String(req.query.status || '')
+        .trim()
+        .toLowerCase();
+      const incidents = tokenModel.listIncidents({ status, limit });
+      return res.json({ incidents });
+    })
+  );
+
+  app.patch(
+    '/api/incidents/:id/status',
+    requireRole('admin'),
+    asyncRoute(async (req, res) => {
+      const id = Number(req.params.id);
+      const status = String(req.body?.status || '')
+        .trim()
+        .toLowerCase();
+      if (!status) {
+        return res.status(400).json({ error: 'status is required' });
+      }
+
+      const updated = tokenModel.setIncidentStatus(id, status);
+      if (!updated) {
+        return res.status(404).json({ error: 'incident not found' });
+      }
+
+      return res.json({ incident: updated });
+    })
+  );
+
+  app.get(
+    '/api/admin-users',
+    requireRole('owner'),
+    asyncRoute(async (_req, res) => {
+      const users = tokenModel.listAdminUsers().map((row) => sanitizeAdminUserForResponse(row));
+      return res.json({ users });
+    })
+  );
+
+  app.post(
+    '/api/admin-users',
+    requireRole('owner'),
+    asyncRoute(async (req, res) => {
+      const username = String(req.body?.username || '')
+        .trim()
+        .toLowerCase();
+      const password = String(req.body?.password || '');
+      const role = normalizeAdminRole(req.body?.role, 'viewer');
+      const enabled = req.body?.enabled === undefined ? true : asBoolean(req.body.enabled, true);
+
+      if (!/^[a-z0-9._-]{3,64}$/i.test(username)) {
+        return res.status(400).json({ error: 'invalid username format' });
+      }
+      if (!password) {
+        return res.status(400).json({ error: 'password is required' });
+      }
+
+      const user = tokenModel.upsertAdminUser({
+        username,
+        password,
+        role,
+        enabled
+      });
+      return res.status(201).json({ user: sanitizeAdminUserForResponse(user) });
+    })
+  );
+
+  app.patch(
+    '/api/admin-users/:id',
+    requireRole('owner'),
+    asyncRoute(async (req, res) => {
+      const id = Number(req.params.id);
+      const current = tokenModel.listAdminUsers().find((item) => Number(item.id) === id);
+      if (!current) {
+        return res.status(404).json({ error: 'admin user not found' });
+      }
+
+      const updates = {};
+      if (req.body?.role !== undefined) {
+        updates.role = normalizeAdminRole(req.body.role, 'viewer');
+      }
+      if (req.body?.enabled !== undefined) {
+        updates.enabled = asBoolean(req.body.enabled, true);
+      }
+      if (req.body?.password !== undefined) {
+        updates.password = String(req.body.password || '');
+      }
+
+      if (Number(req.admin?.id || 0) === id && updates.enabled === false) {
+        return res.status(400).json({ error: 'cannot disable current authenticated admin' });
+      }
+
+      if (updates.role && updates.role !== 'owner') {
+        const owners = tokenModel
+          .listAdminUsers()
+          .filter((item) => normalizeAdminRole(item.role, 'viewer') === 'owner' && Number(item.enabled) === 1);
+        const isCurrentOnlyOwner = normalizeAdminRole(current.role, 'viewer') === 'owner' && owners.length <= 1;
+        if (isCurrentOnlyOwner) {
+          return res.status(400).json({ error: 'at least one enabled owner is required' });
+        }
+      }
+
+      const updated = tokenModel.setAdminUser(id, updates);
+      return res.json({ user: sanitizeAdminUserForResponse(updated) });
+    })
+  );
+
+  app.delete(
+    '/api/admin-users/:id',
+    requireRole('owner'),
+    asyncRoute(async (req, res) => {
+      const id = Number(req.params.id);
+      const current = tokenModel.listAdminUsers().find((item) => Number(item.id) === id);
+      if (!current) {
+        return res.status(404).json({ error: 'admin user not found' });
+      }
+
+      if (Number(req.admin?.id || 0) === id) {
+        return res.status(400).json({ error: 'cannot delete current authenticated admin' });
+      }
+
+      const owners = tokenModel
+        .listAdminUsers()
+        .filter((item) => normalizeAdminRole(item.role, 'viewer') === 'owner' && Number(item.enabled) === 1);
+      const deletingLastOwner = normalizeAdminRole(current.role, 'viewer') === 'owner' && owners.length <= 1;
+      if (deletingLastOwner) {
+        return res.status(400).json({ error: 'cannot delete the last enabled owner' });
+      }
+
+      tokenModel.deleteAdminUserById(id);
+      return res.status(204).send();
+    })
+  );
+
+  app.get(
+    '/api/audit',
+    requireRole('admin'),
+    asyncRoute(async (req, res) => {
+      const limit = parsePositiveInt(req.query.limit, 200, 2000);
+      const logs = tokenModel.listAuditLogs(limit);
+      return res.json({ logs });
     })
   );
 

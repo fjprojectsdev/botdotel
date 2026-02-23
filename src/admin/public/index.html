@@ -57,6 +57,7 @@
           <button class="side-link" type="button" data-nav-view="schedules">Agendamentos</button>
           <button class="side-link" type="button" data-nav-view="automation">Automacoes & Moderacao</button>
           <button class="side-link" type="button" data-nav-view="moderation">Moderacao</button>
+          <button class="side-link" type="button" data-nav-view="incidents">Incidentes</button>
           <button class="side-link" type="button" data-nav-view="broadcast">Broadcast</button>
           <button class="side-link" type="button" data-nav-view="tokens">Tokens</button>
           <button class="side-link" type="button" data-nav-view="activity">Atividade</button>
@@ -411,6 +412,45 @@
                     </tr>
                   </thead>
                   <tbody id="moderationTableBody"></tbody>
+                </table>
+              </div>
+            </section>
+          </section>
+
+          <section class="view" data-view="incidents">
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Incidentes Operacionais</h2>
+                <span class="panel-hint">Falhas de entrega, lockout admin e disponibilidade</span>
+              </div>
+
+              <div class="filter-row filter-row-wide">
+                <select id="incidentStatusFilter">
+                  <option value="">Todos os status</option>
+                  <option value="open">Abertos</option>
+                  <option value="ack">Reconhecidos</option>
+                  <option value="resolved">Resolvidos</option>
+                  <option value="ignored">Ignorados</option>
+                </select>
+                <div class="filter-actions">
+                  <button id="refreshIncidentsBtn" class="btn btn-soft" type="button">Atualizar</button>
+                </div>
+              </div>
+
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Criado em</th>
+                      <th>Tipo</th>
+                      <th>Titulo</th>
+                      <th>Severidade</th>
+                      <th>Status</th>
+                      <th>Grupo</th>
+                      <th>Acoes</th>
+                    </tr>
+                  </thead>
+                  <tbody id="incidentsTbody"></tbody>
                 </table>
               </div>
             </section>

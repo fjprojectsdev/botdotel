@@ -3,10 +3,11 @@ const { Telegraf } = require('telegraf');
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 class TelegramClient {
-  constructor({ token, groupIds, groupResolver, logger, polling = true, pollingParams = {} }) {
+  constructor({ token, groupIds, groupResolver, logger, polling = true, pollingParams = {}, onDeliveryResult = null }) {
     this.logger = logger;
     this.envGroupIds = this.parseGroupIds(groupIds);
     this.groupResolver = typeof groupResolver === 'function' ? groupResolver : null;
+    this.onDeliveryResult = typeof onDeliveryResult === 'function' ? onDeliveryResult : null;
     this.enablePolling = Boolean(polling);
     this.pollingParams = pollingParams && typeof pollingParams === 'object' ? pollingParams : {};
     this.bot = token ? new Telegraf(token, { handlerTimeout: 60_000 }) : null;
@@ -17,6 +18,10 @@ class TelegramClient {
     this.pollingRestartTimer = null;
     this.pollingErrorBound = false;
     this.isClosing = false;
+    this.lastPollingError = '';
+    this.lastPollingErrorAt = null;
+    this.lastStartedAt = null;
+    this.lastStoppedAt = null;
     this.me = null;
 
     if (!this.bot) {
@@ -62,6 +67,9 @@ class TelegramClient {
       this.pollingLaunchPromise = launchPromise;
       this.pollingStarted = true;
       this.pollingBooting = false;
+      this.lastStartedAt = new Date().toISOString();
+      this.lastPollingError = '';
+      this.lastPollingErrorAt = null;
       this.logger.info('telegram polling started');
 
       launchPromise
@@ -71,6 +79,7 @@ class TelegramClient {
           }
           this.pollingLaunchPromise = null;
           this.pollingStarted = false;
+          this.lastStoppedAt = new Date().toISOString();
           this.logger.warn('telegram polling stopped');
           this.schedulePollingRestart();
         })
@@ -80,6 +89,9 @@ class TelegramClient {
           }
           this.pollingLaunchPromise = null;
           this.pollingStarted = false;
+          this.lastPollingError = String(error?.message || 'polling stopped');
+          this.lastPollingErrorAt = new Date().toISOString();
+          this.lastStoppedAt = new Date().toISOString();
           this.logger.error({ err: error.message }, 'telegram polling launch failed');
           this.schedulePollingRestart();
         });
@@ -87,6 +99,8 @@ class TelegramClient {
       this.pollingBooting = false;
       this.pollingStarted = false;
       this.pollingLaunchPromise = null;
+      this.lastPollingError = String(error?.message || 'startup failed');
+      this.lastPollingErrorAt = new Date().toISOString();
       this.logger.error({ err: error.message }, 'telegram startup failed');
       this.schedulePollingRestart();
     }
@@ -250,6 +264,36 @@ class TelegramClient {
     };
   }
 
+  parseTelegramError(error) {
+    const message = String(error?.message || '').trim();
+    const codeMatch = message.match(/\b(\d{3})\b/);
+    const code = codeMatch ? String(codeMatch[1]) : '';
+    const normalized = message.toLowerCase();
+    const permanent =
+      code === '403' ||
+      code === '400' ||
+      /forbidden|kicked|chat not found|bot was blocked|deactivated|not enough rights/i.test(normalized);
+
+    return {
+      code,
+      message,
+      permanent,
+      transient: !permanent
+    };
+  }
+
+  notifyDeliveryResult(payload) {
+    if (!this.onDeliveryResult) {
+      return;
+    }
+
+    try {
+      this.onDeliveryResult(payload);
+    } catch (error) {
+      this.logger.warn({ err: error.message }, 'delivery result hook failed');
+    }
+  }
+
   async sendAlert(message, options = {}) {
     if (!this.bot) {
       return {
@@ -292,6 +336,8 @@ class TelegramClient {
       let sent = false;
       let usedFallback = false;
       let failureReason = '';
+      let failureCode = '';
+      let permanentFailure = false;
 
       try {
         if (mediaUrl) {
@@ -308,7 +354,11 @@ class TelegramClient {
           sent = Boolean(textResult?.sent);
         }
       } catch (error) {
-        failureReason = String(error?.message || 'send failed');
+        const normalizedError = this.parseTelegramError(error);
+        failureReason = normalizedError.message || 'send failed';
+        failureCode = normalizedError.code;
+        permanentFailure = normalizedError.permanent;
+
         if (mediaUrl) {
           try {
             const fallbackResult = await this.sendMessage(groupId, messageText);
@@ -322,7 +372,10 @@ class TelegramClient {
               );
             }
           } catch (fallbackError) {
-            failureReason = `${error.message}; fallback: ${fallbackError.message}`;
+            const fallbackParsed = this.parseTelegramError(fallbackError);
+            failureReason = `${normalizedError.message}; fallback: ${fallbackParsed.message}`;
+            failureCode = fallbackParsed.code || failureCode;
+            permanentFailure = fallbackParsed.permanent || permanentFailure;
           }
         }
         if (!sent) {
@@ -340,7 +393,9 @@ class TelegramClient {
         groupId,
         sent,
         fallback: usedFallback,
-        error: sent ? '' : failureReason || 'not delivered'
+        error: sent ? '' : failureReason || 'not delivered',
+        errorCode: sent ? '' : failureCode,
+        permanentFailure: sent ? false : permanentFailure
       });
     }
 
@@ -354,6 +409,16 @@ class TelegramClient {
       reason: delivered > 0 ? '' : results[0]?.error || 'not delivered',
       results
     };
+
+    this.notifyDeliveryResult({
+      type: 'sendAlert',
+      timestamp: new Date().toISOString(),
+      summary,
+      options: {
+        mediaUrl: mediaUrl || '',
+        hasExplicitChatIds: Array.isArray(options.chatIds) && options.chatIds.length > 0
+      }
+    });
 
     if (options.throwOnFailure && delivered === 0) {
       throw new Error(summary.reason || 'telegram delivery failed');
@@ -528,6 +593,24 @@ class TelegramClient {
     return this.bot.telegram.setMyCommands(commands);
   }
 
+  getStatus() {
+    const username = this.me?.username ? `@${this.me.username}` : '';
+    const ready = this.bot ? (this.enablePolling ? this.pollingStarted : true) : false;
+
+    return {
+      botAvailable: Boolean(this.bot),
+      pollingEnabled: this.enablePolling,
+      pollingStarted: this.pollingStarted,
+      pollingBooting: this.pollingBooting,
+      ready,
+      username,
+      lastStartedAt: this.lastStartedAt,
+      lastStoppedAt: this.lastStoppedAt,
+      lastPollingError: this.lastPollingError,
+      lastPollingErrorAt: this.lastPollingErrorAt
+    };
+  }
+
   async close() {
     if (!this.bot) {
       return;
@@ -547,6 +630,7 @@ class TelegramClient {
         this.logger.warn({ err: error.message }, 'telegram stop polling failed');
       }
       this.pollingStarted = false;
+      this.lastStoppedAt = new Date().toISOString();
     }
     this.pollingBooting = false;
     this.pollingLaunchPromise = null;

@@ -26,6 +26,16 @@ class EvmListener {
     this.pairMetaByAddress = new Map();
     this.pollPromise = null;
     this.syncTimer = null;
+    this.rpcUrls = Array.isArray(this.network.rpcUrls) ? this.network.rpcUrls.filter(Boolean) : [];
+    if (!this.rpcUrls.length && this.network.rpcUrl) {
+      this.rpcUrls = [this.network.rpcUrl];
+    }
+    this.rpcIndex = 0;
+    this.currentRpcUrl = this.rpcUrls[0] || '';
+    this.lastError = '';
+    this.lastErrorAt = null;
+    this.lastConnectedAt = null;
+    this.lastSyncAt = null;
 
     this.swapInterface = new Interface([SWAP_EVENT]);
     this.swapTopic = this.swapInterface.getEvent('Swap').topicHash;
@@ -36,13 +46,18 @@ class EvmListener {
   }
 
   async start() {
-    if (!this.network.rpcUrl) {
+    if (!this.rpcUrls.length) {
       this.logger.warn({ network: this.network.key }, 'rpc url missing; listener disabled');
       return;
     }
 
     this.running = true;
-    await this.connectProvider(true);
+    const connected = await this.connectWithAnyRpc(true);
+    if (!connected) {
+      this.running = false;
+      this.logger.error({ network: this.network.key }, 'failed to connect any rpc endpoint; listener disabled');
+      return;
+    }
     await this.syncTrackedPairs();
 
     this.pollPromise = this.pollLoop();
@@ -75,7 +90,11 @@ class EvmListener {
   }
 
   async connectProvider(resetBlock = false) {
-    this.provider = new JsonRpcProvider(this.network.rpcUrl, undefined, {
+    if (!this.currentRpcUrl) {
+      throw new Error('rpc url missing');
+    }
+
+    this.provider = new JsonRpcProvider(this.currentRpcUrl, undefined, {
       staticNetwork: false
     });
 
@@ -88,12 +107,63 @@ class EvmListener {
       this.lastProcessedBlock = Math.max(0, latest - 1);
     }
 
-    this.logger.info({ network: this.network.key, latestBlock: latest }, 'evm rpc connected');
+    this.logger.info({ network: this.network.key, latestBlock: latest, rpcUrl: this.currentRpcUrl }, 'evm rpc connected');
+    this.lastConnectedAt = new Date().toISOString();
+    this.lastError = '';
+    this.lastErrorAt = null;
   }
 
-  async reconnectWithBackoff(delayMs) {
+  rotateRpc() {
+    if (!this.rpcUrls.length) {
+      this.currentRpcUrl = '';
+      this.rpcIndex = 0;
+      return;
+    }
+
+    this.rpcIndex = (this.rpcIndex + 1) % this.rpcUrls.length;
+    this.currentRpcUrl = this.rpcUrls[this.rpcIndex];
+  }
+
+  async connectWithAnyRpc(resetBlock = false) {
+    if (!this.rpcUrls.length) {
+      return false;
+    }
+
+    const maxAttempts = this.rpcUrls.length;
+    let attempts = 0;
+    while (attempts < maxAttempts && this.running) {
+      try {
+        await this.connectProvider(resetBlock);
+        return true;
+      } catch (error) {
+        attempts += 1;
+        this.lastError = String(error?.message || 'rpc connect failed');
+        this.lastErrorAt = new Date().toISOString();
+        this.logger.warn(
+          {
+            network: this.network.key,
+            rpcUrl: this.currentRpcUrl,
+            attempt: attempts,
+            err: error.message
+          },
+          'evm rpc connect failed, trying fallback'
+        );
+        this.rotateRpc();
+      }
+    }
+
+    return false;
+  }
+
+  async reconnectWithBackoff(delayMs, { rotate = true, resetBlock = false } = {}) {
     await sleep(delayMs);
-    await this.connectProvider(false);
+    if (rotate && this.rpcUrls.length > 1) {
+      this.rotateRpc();
+    }
+    const connected = await this.connectWithAnyRpc(resetBlock);
+    if (!connected) {
+      throw new Error('all rpc reconnect attempts failed');
+    }
     await this.syncTrackedPairs();
   }
 
@@ -198,6 +268,7 @@ class EvmListener {
       },
       'evm pairs synchronized'
     );
+    this.lastSyncAt = new Date().toISOString();
   }
 
   async pollLoop() {
@@ -246,6 +317,8 @@ class EvmListener {
       } catch (error) {
         const errorMessage = String(error?.message || '');
         const invalidBlockRange = /invalid block range params/i.test(errorMessage);
+        this.lastError = errorMessage;
+        this.lastErrorAt = new Date().toISOString();
 
         this.logger.error(
           {
@@ -258,14 +331,14 @@ class EvmListener {
 
         try {
           if (invalidBlockRange) {
-            await sleep(backoff);
-            await this.connectProvider(true);
-            await this.syncTrackedPairs();
+            await this.reconnectWithBackoff(backoff, { rotate: false, resetBlock: true });
           } else {
-            await this.reconnectWithBackoff(backoff);
+            await this.reconnectWithBackoff(backoff, { rotate: true, resetBlock: false });
           }
           backoff = Math.min(backoff * 2, 30_000);
         } catch (reconnectError) {
+          this.lastError = String(reconnectError?.message || errorMessage);
+          this.lastErrorAt = new Date().toISOString();
           this.logger.error(
             {
               network: this.network.key,
@@ -316,6 +389,23 @@ class EvmListener {
         'failed to parse swap log'
       );
     }
+  }
+
+  getStatus() {
+    return {
+      network: this.network.key,
+      type: 'evm',
+      running: this.running,
+      rpcUrl: this.currentRpcUrl,
+      rpcIndex: this.rpcIndex,
+      rpcPoolSize: this.rpcUrls.length,
+      trackedPairs: this.pairMetaByAddress.size,
+      lastProcessedBlock: this.lastProcessedBlock,
+      lastConnectedAt: this.lastConnectedAt,
+      lastSyncAt: this.lastSyncAt,
+      lastError: this.lastError,
+      lastErrorAt: this.lastErrorAt
+    };
   }
 }
 

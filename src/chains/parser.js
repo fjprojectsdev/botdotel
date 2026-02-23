@@ -50,6 +50,11 @@ const parseEvmSwap = ({ parsedLog, log, pairMeta, network }) => {
     return null;
   }
 
+  const logIndex = Math.max(0, Number(log?.logIndex ?? log?.index ?? 0) || 0);
+  const eventUid = `${String(network || '').toLowerCase()}:${String(log.transactionHash || '').toLowerCase()}:${String(
+    pairMeta.trackedToken || ''
+  ).toLowerCase()}:${logIndex}`;
+
   return {
     network,
     tokenName: pairMeta.name,
@@ -57,6 +62,8 @@ const parseEvmSwap = ({ parsedLog, log, pairMeta, network }) => {
     tokenAddress: pairMeta.trackedToken,
     pairAddress: log.address,
     hash: log.transactionHash,
+    logIndex,
+    eventUid,
     buyer: parsedLog.args.to,
     tokenAmount,
     baseAmount,
@@ -178,6 +185,7 @@ const parseSolanaSwap = ({ parsedTx, trackedTokensByMint, signature, network, st
 
   const tokenBalanceMap = buildTokenBalanceMap(parsedTx.meta);
   const events = [];
+  let eventIndex = 0;
   const blockTime = parsedTx.blockTime ? new Date(parsedTx.blockTime * 1000).toISOString() : new Date().toISOString();
 
   for (const [mint, tracked] of trackedTokensByMint.entries()) {
@@ -215,6 +223,11 @@ const parseSolanaSwap = ({ parsedTx, trackedTokensByMint, signature, network, st
         tokenAddress: tracked.address,
         pairAddress: tracked.pair_address,
         hash: signature,
+        logIndex: eventIndex,
+        eventIndex,
+        eventUid: `${String(network || '').toLowerCase()}:${String(signature || '').toLowerCase()}:${String(
+          tracked.address || ''
+        ).toLowerCase()}:${eventIndex}`,
         buyer: owner,
         tokenAmount,
         baseAmount,
@@ -222,6 +235,7 @@ const parseSolanaSwap = ({ parsedTx, trackedTokensByMint, signature, network, st
         usdValue: baseSymbol === 'USDC' || baseSymbol === 'USDT' ? baseAmount : null,
         timestamp: blockTime
       });
+      eventIndex += 1;
     }
   }
 

@@ -6,12 +6,33 @@ const toLowerKeyMap = (obj) => {
   return out;
 };
 
+const parseRpcUrls = (...values) =>
+  Array.from(
+    new Set(
+      values
+        .flatMap((entry) =>
+          String(entry || '')
+            .split(',')
+            .map((item) => item.trim())
+            .filter(Boolean)
+        )
+        .filter(Boolean)
+    )
+  );
+
+const ETH_RPC_URLS = parseRpcUrls(process.env.ETH_RPC, process.env.ETH_RPC_FALLBACKS);
+const BSC_RPC_URLS = parseRpcUrls(process.env.BSC_RPC, process.env.BSC_RPC_FALLBACKS);
+const BASE_RPC_URLS = parseRpcUrls(process.env.BASE_RPC, process.env.BASE_RPC_FALLBACKS);
+const POLYGON_RPC_URLS = parseRpcUrls(process.env.POLYGON_RPC, process.env.POLYGON_RPC_FALLBACKS);
+const SOLANA_RPC_URLS = parseRpcUrls(process.env.SOLANA_RPC, process.env.SOLANA_RPC_FALLBACKS);
+
 const NETWORKS = Object.freeze({
   ethereum: {
     key: 'ethereum',
     label: 'Ethereum',
     type: 'evm',
-    rpcUrl: process.env.ETH_RPC || '',
+    rpcUrl: ETH_RPC_URLS[0] || '',
+    rpcUrls: ETH_RPC_URLS,
     dexChain: 'ethereum',
     nativeSymbol: 'ETH',
     explorerTxBase: 'https://etherscan.io/tx/',
@@ -27,7 +48,8 @@ const NETWORKS = Object.freeze({
     key: 'bsc',
     label: 'BSC',
     type: 'evm',
-    rpcUrl: process.env.BSC_RPC || '',
+    rpcUrl: BSC_RPC_URLS[0] || '',
+    rpcUrls: BSC_RPC_URLS,
     dexChain: 'bsc',
     nativeSymbol: 'BNB',
     explorerTxBase: 'https://bscscan.com/tx/',
@@ -43,7 +65,8 @@ const NETWORKS = Object.freeze({
     key: 'base',
     label: 'Base',
     type: 'evm',
-    rpcUrl: process.env.BASE_RPC || '',
+    rpcUrl: BASE_RPC_URLS[0] || '',
+    rpcUrls: BASE_RPC_URLS,
     dexChain: 'base',
     nativeSymbol: 'ETH',
     explorerTxBase: 'https://basescan.org/tx/',
@@ -57,7 +80,8 @@ const NETWORKS = Object.freeze({
     key: 'polygon',
     label: 'Polygon',
     type: 'evm',
-    rpcUrl: process.env.POLYGON_RPC || '',
+    rpcUrl: POLYGON_RPC_URLS[0] || '',
+    rpcUrls: POLYGON_RPC_URLS,
     dexChain: 'polygon',
     nativeSymbol: 'MATIC',
     explorerTxBase: 'https://polygonscan.com/tx/',
@@ -73,7 +97,8 @@ const NETWORKS = Object.freeze({
     key: 'solana',
     label: 'Solana',
     type: 'solana',
-    rpcUrl: process.env.SOLANA_RPC || '',
+    rpcUrl: SOLANA_RPC_URLS[0] || '',
+    rpcUrls: SOLANA_RPC_URLS,
     dexChain: 'solana',
     nativeSymbol: 'SOL',
     explorerTxBase: 'https://solscan.io/tx/',

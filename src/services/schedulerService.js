@@ -161,6 +161,14 @@ class SchedulerService {
       await sleep(this.intervalMs);
     }
   }
+
+  getStatus() {
+    return {
+      running: this.running,
+      intervalMs: this.intervalMs,
+      processing: this.processingIds.size
+    };
+  }
 }
 
 module.exports = SchedulerService;

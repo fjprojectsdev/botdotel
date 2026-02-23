@@ -33,6 +33,7 @@ const state = {
     },
     logs: []
   },
+  incidents: [],
   broadcasts: [],
   filteredTransactions: [],
   currentView: 'overview',
@@ -42,6 +43,7 @@ const state = {
   memberSearch: '',
   commandSearch: '',
   scheduleSearch: '',
+  incidentStatus: '',
   automationGroupId: null,
   openCommandCategories: new Set(),
   apiBase: '',
@@ -65,10 +67,25 @@ const viewTitles = {
   schedules: 'Agendamentos',
   automation: 'Automacoes & Moderacao',
   moderation: 'Moderacao',
+  incidents: 'Incidentes Operacionais',
   broadcast: 'Broadcast',
   tokens: 'Tokens Monitorados',
   activity: 'Atividade',
   settings: 'Configuracoes'
+};
+
+const INCIDENT_STATUS_LABEL = {
+  open: 'Aberto',
+  ack: 'Reconhecido',
+  resolved: 'Resolvido',
+  ignored: 'Ignorado'
+};
+
+const INCIDENT_SEVERITY_LABEL = {
+  low: 'Baixa',
+  medium: 'Media',
+  high: 'Alta',
+  critical: 'Critica'
 };
 
 const DEFAULT_GROUP_PERMISSIONS = [
@@ -169,6 +186,8 @@ const refs = {
   memberSearchInput: document.getElementById('memberSearchInput'),
   commandSearchInput: document.getElementById('commandSearchInput'),
   scheduleSearchInput: document.getElementById('scheduleSearchInput'),
+  incidentStatusFilter: document.getElementById('incidentStatusFilter'),
+  refreshIncidentsBtn: document.getElementById('refreshIncidentsBtn'),
   automationGroupSelect: document.getElementById('automationGroupSelect'),
 
   commandsEnableAllBtn: document.getElementById('commandsEnableAllBtn'),
@@ -198,6 +217,7 @@ const refs = {
   modResolved: document.getElementById('modResolved'),
   modStrikes: document.getElementById('modStrikes'),
   moderationTableBody: document.getElementById('moderationTableBody'),
+  incidentsTbody: document.getElementById('incidentsTbody'),
   broadcastForm: document.getElementById('broadcastForm'),
   broadcastTitleInput: document.getElementById('broadcastTitleInput'),
   broadcastContentInput: document.getElementById('broadcastContentInput'),
@@ -853,7 +873,20 @@ const normalizeGroup = (group) => {
   const source = group && typeof group === 'object' ? group : {};
   return {
     ...source,
-    permissions: parseGroupPermissions(source.permissions || source.permission || source.permissionsCsv)
+    permissions: parseGroupPermissions(source.permissions || source.permission || source.permissionsCsv),
+    delivery_health:
+      source.delivery_health && typeof source.delivery_health === 'object'
+        ? source.delivery_health
+        : {
+            consecutive_failures: 0,
+            total_failures: 0,
+            total_success: 0,
+            last_error: '',
+            last_error_code: '',
+            last_error_at: null,
+            last_success_at: null,
+            auto_disabled_at: null
+          }
   };
 };
 
@@ -1094,7 +1127,9 @@ const renderStats = () => {
 
   refs.statusLine.textContent = `Atualizado ${new Date().toLocaleTimeString('pt-BR')} | ${
     txs.length
-  } compras no periodo | minUSD ${formatUsd(stats.minUsdAlert || 0)} | uptime ${stats.uptimeSec || 0}s`;
+  } compras no periodo | minUSD ${formatUsd(stats.minUsdAlert || 0)} | incidentes ${
+    stats.incidentsOpen || 0
+  } | telegram ${stats.telegramReady ? 'ok' : 'off'} | uptime ${stats.uptimeSec || 0}s`;
 
   if (refs.topGroups) {
     refs.topGroups.textContent = formatCompact(stats.groups?.total || state.groups.length);
@@ -1212,6 +1247,9 @@ const renderRuntimeMeta = () => {
     `<div>Process queue: <strong>${stats.queues?.processSize || 0}</strong> | Telegram queue: <strong>${
       stats.queues?.telegramSize || 0
     }</strong></div>`,
+    `<div>Incidentes abertos: <strong>${stats.incidentsOpen || 0}</strong> | Telegram pronto: <strong>${
+      stats.telegramReady ? 'sim' : 'nao'
+    }</strong></div>`,
     `<div>Alertas recentes registrados: <strong>${stats.recentAlerts || 0}</strong></div>`,
     `<div>Agendamentos pendentes: <strong>${stats.schedules?.pending || 0}</strong></div>`,
     `<div>Botoes do menu inicial: <strong>${state.menuConfig?.buttons?.length || 0}</strong></div>`,
@@ -1242,6 +1280,14 @@ const renderGroups = () => {
       const enabled = isEnabled(group.enabled);
       const memberCount = Math.max(0, Number(group.member_count || 0));
       const permissions = parseGroupPermissions(group.permissions, { fallbackToDefault: false });
+      const delivery = group.delivery_health && typeof group.delivery_health === 'object' ? group.delivery_health : {};
+      const consecutiveFailures = Math.max(0, Number(delivery.consecutive_failures || 0) || 0);
+      const lastSuccessAt = delivery.last_success_at ? new Date(delivery.last_success_at).toLocaleString('pt-BR') : '';
+      const deliveryHint = consecutiveFailures
+        ? `Falhas consecutivas: ${consecutiveFailures}`
+        : lastSuccessAt
+          ? `Ultimo envio OK: ${lastSuccessAt}`
+          : 'Sem historico de entrega';
       const permissionsHtml = permissions.length
         ? permissions.map((permission) => `<span class="permission-chip">${escapeHtml(permission)}</span>`).join('')
         : '<span class="permission-chip permission-chip-off">sem_permissoes</span>';
@@ -1262,6 +1308,7 @@ const renderGroups = () => {
           }"></i>${enabled ? 'Ativo' : 'Pausado'}</span>
           <span class="group-members-count">${memberCount} membros</span>
         </div>
+        <div class="panel-hint">${escapeHtml(deliveryHint)}</div>
         <div class="group-permissions">
           ${permissionsHtml}
         </div>
@@ -1728,6 +1775,66 @@ const renderModeration = () => {
     .join('');
 };
 
+const renderIncidents = () => {
+  if (!refs.incidentsTbody) {
+    return;
+  }
+
+  if (refs.incidentStatusFilter && refs.incidentStatusFilter.value !== state.incidentStatus) {
+    refs.incidentStatusFilter.value = state.incidentStatus;
+  }
+
+  const filterStatus = String(state.incidentStatus || '')
+    .trim()
+    .toLowerCase();
+  const source = Array.isArray(state.incidents) ? state.incidents : [];
+  const rows = filterStatus ? source.filter((item) => String(item.status || '').toLowerCase() === filterStatus) : source;
+
+  if (!rows.length) {
+    refs.incidentsTbody.innerHTML = '<tr><td colspan="7" class="placeholder">Nenhum incidente encontrado.</td></tr>';
+    return;
+  }
+
+  refs.incidentsTbody.innerHTML = rows
+    .map((item) => {
+      const status = String(item.status || '').toLowerCase();
+      const severity = String(item.severity || 'medium').toLowerCase();
+      const statusLabel = INCIDENT_STATUS_LABEL[status] || status || '-';
+      const severityLabel = INCIDENT_SEVERITY_LABEL[severity] || severity || '-';
+      const createdAt = item.created_at ? new Date(item.created_at).toLocaleString('pt-BR') : '-';
+      const chatId = String(item.chat_id || '').trim();
+
+      return `<tr>
+        <td>${escapeHtml(createdAt)}</td>
+        <td>${escapeHtml(item.incident_type || '-')}</td>
+        <td>${escapeHtml(shortText(item.title || '-', 64, 0))}</td>
+        <td><span class="badge badge-severity badge-severity-${escapeHtml(severity)}">${escapeHtml(severityLabel)}</span></td>
+        <td><span class="badge badge-soft">${escapeHtml(statusLabel)}</span></td>
+        <td>${escapeHtml(chatId ? getGroupLabelById(chatId) : '-')}</td>
+        <td>
+          <div class="actions">
+            ${
+              status === 'open'
+                ? `<button class="btn btn-small btn-soft" data-action="incident-status" data-id="${item.id}" data-status="ack" type="button">ACK</button>`
+                : ''
+            }
+            ${
+              status === 'resolved' || status === 'ignored'
+                ? `<button class="btn btn-small btn-ghost" data-action="incident-status" data-id="${item.id}" data-status="open" type="button">Reabrir</button>`
+                : `<button class="btn btn-small btn-soft" data-action="incident-status" data-id="${item.id}" data-status="resolved" type="button">Resolver</button>`
+            }
+            ${
+              status === 'ignored'
+                ? ''
+                : `<button class="btn btn-small btn-ghost" data-action="incident-status" data-id="${item.id}" data-status="ignored" type="button">Ignorar</button>`
+            }
+          </div>
+        </td>
+      </tr>`;
+    })
+    .join('');
+};
+
 const renderBroadcastGroupChecklist = () => {
   if (!refs.broadcastGroupChecklist) {
     return;
@@ -1972,6 +2079,7 @@ const renderAll = () => {
   renderAutomationGroupSelect();
   renderAutomation();
   renderModeration();
+  renderIncidents();
   renderBroadcastGroupChecklist();
   renderBroadcasts();
   renderTokens();
@@ -2002,7 +2110,8 @@ const loadData = async ({ silent = false, suppressErrors = false } = {}) => {
         membersPayload,
         commandsPayload,
         schedulesPayload,
-        broadcastsPayload
+        broadcastsPayload,
+        incidentsPayload
       ] = await Promise.all([
         apiFetch('/api/networks'),
         apiFetch('/api/stats'),
@@ -2013,7 +2122,8 @@ const loadData = async ({ silent = false, suppressErrors = false } = {}) => {
         apiFetch(`/api/members?days=${encodeURIComponent(days)}&limit=350`),
         apiFetch('/api/commands'),
         apiFetch('/api/schedules?limit=300'),
-        apiFetch('/api/broadcasts?limit=200')
+        apiFetch('/api/broadcasts?limit=200'),
+        apiFetch('/api/incidents?limit=250').catch(() => ({ incidents: [] }))
       ]);
 
       state.networks = networksPayload?.networks || [];
@@ -2028,6 +2138,7 @@ const loadData = async ({ silent = false, suppressErrors = false } = {}) => {
       state.members = membersPayload?.members || [];
       state.schedules = schedulesPayload?.schedules || [];
       state.broadcasts = broadcastsPayload?.broadcasts || [];
+      state.incidents = incidentsPayload?.incidents || [];
       setCommandCategories(commandsPayload?.categories || []);
       ensureAutomationGroupSelection();
       await loadAutomationState();
@@ -2652,6 +2763,8 @@ const bindEvents = () => {
         renderAutomation();
       } else if (state.currentView === 'moderation') {
         renderModeration();
+      } else if (state.currentView === 'incidents') {
+        renderIncidents();
       } else if (state.currentView === 'broadcast') {
         renderBroadcastGroupChecklist();
         renderBroadcasts();
@@ -2721,6 +2834,32 @@ const bindEvents = () => {
     state.scheduleSearch = event.target.value || '';
     renderSchedules();
   });
+
+  if (refs.incidentStatusFilter) {
+    refs.incidentStatusFilter.addEventListener('change', () => {
+      state.incidentStatus = String(refs.incidentStatusFilter.value || '')
+        .trim()
+        .toLowerCase();
+      renderIncidents();
+    });
+  }
+
+  if (refs.refreshIncidentsBtn) {
+    refs.refreshIncidentsBtn.addEventListener('click', () =>
+      withButtonLock(refs.refreshIncidentsBtn, async () => {
+        const status = String(state.incidentStatus || '')
+          .trim()
+          .toLowerCase();
+        const suffix = status ? `?status=${encodeURIComponent(status)}&limit=250` : '?limit=250';
+        const payload = await apiFetch(`/api/incidents${suffix}`);
+        state.incidents = payload?.incidents || [];
+        renderIncidents();
+        showToast('Incidentes atualizados.');
+      }).catch((error) => {
+        showToast(error.message || 'Falha ao atualizar incidentes.', true);
+      })
+    );
+  }
 
   if (refs.automationTabs) {
     refs.automationTabs.addEventListener('click', (event) => {
@@ -3385,6 +3524,24 @@ const bindEvents = () => {
           method: 'DELETE'
         });
         showToast('Item removido da whitelist.');
+        await loadData({ silent: true });
+        return;
+      }
+
+      if (action === 'incident-status') {
+        const id = Number(trigger.dataset.id || 0);
+        const status = String(trigger.dataset.status || '')
+          .trim()
+          .toLowerCase();
+        if (!id || !status) {
+          return;
+        }
+
+        await apiFetch(`/api/incidents/${id}/status`, {
+          method: 'PATCH',
+          body: JSON.stringify({ status })
+        });
+        showToast('Status do incidente atualizado.');
         await loadData({ silent: true });
         return;
       }

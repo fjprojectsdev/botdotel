@@ -24,10 +24,20 @@ class SolanaListener {
     this.syncTimer = null;
     this.healthTimer = null;
     this.pruneTimer = null;
+    this.rpcUrls = Array.isArray(this.network.rpcUrls) ? this.network.rpcUrls.filter(Boolean) : [];
+    if (!this.rpcUrls.length && this.network.rpcUrl) {
+      this.rpcUrls = [this.network.rpcUrl];
+    }
+    this.rpcIndex = 0;
+    this.currentRpcUrl = this.rpcUrls[0] || '';
+    this.lastError = '';
+    this.lastErrorAt = null;
+    this.lastConnectedAt = null;
+    this.lastHealthAt = null;
   }
 
   async start() {
-    if (!this.network.rpcUrl) {
+    if (!this.rpcUrls.length) {
       this.logger.warn('solana rpc url missing; listener disabled');
       return;
     }
@@ -35,7 +45,12 @@ class SolanaListener {
     this.running = true;
 
     await this.syncTrackedTokens();
-    await this.connectAndSubscribe();
+    const connected = await this.connectWithAnyRpc();
+    if (!connected) {
+      this.running = false;
+      this.logger.error({ network: this.network.key }, 'failed to connect any solana rpc endpoint; listener disabled');
+      return;
+    }
 
     this.syncTimer = setInterval(() => {
       this.syncTrackedTokens().catch((error) => {
@@ -81,11 +96,18 @@ class SolanaListener {
   }
 
   async connectAndSubscribe() {
-    this.connection = new Connection(this.network.rpcUrl, {
+    if (!this.currentRpcUrl) {
+      throw new Error('solana rpc url missing');
+    }
+
+    this.connection = new Connection(this.currentRpcUrl, {
       commitment: 'confirmed'
     });
 
     await this.connection.getSlot('confirmed');
+    this.lastConnectedAt = new Date().toISOString();
+    this.lastError = '';
+    this.lastErrorAt = null;
 
     this.subscriptions = [];
     for (const programId of this.network.dexPrograms || []) {
@@ -102,10 +124,52 @@ class SolanaListener {
 
     this.logger.info(
       {
-        programs: (this.network.dexPrograms || []).length
+        programs: (this.network.dexPrograms || []).length,
+        rpcUrl: this.currentRpcUrl
       },
       'solana subscriptions active'
     );
+  }
+
+  rotateRpc() {
+    if (!this.rpcUrls.length) {
+      this.rpcIndex = 0;
+      this.currentRpcUrl = '';
+      return;
+    }
+
+    this.rpcIndex = (this.rpcIndex + 1) % this.rpcUrls.length;
+    this.currentRpcUrl = this.rpcUrls[this.rpcIndex];
+  }
+
+  async connectWithAnyRpc() {
+    if (!this.rpcUrls.length) {
+      return false;
+    }
+
+    const maxAttempts = this.rpcUrls.length;
+    let attempts = 0;
+    while (attempts < maxAttempts && this.running) {
+      try {
+        await this.connectAndSubscribe();
+        return true;
+      } catch (error) {
+        attempts += 1;
+        this.lastError = String(error?.message || 'solana rpc connect failed');
+        this.lastErrorAt = new Date().toISOString();
+        this.logger.warn(
+          {
+            rpcUrl: this.currentRpcUrl,
+            attempt: attempts,
+            err: error.message
+          },
+          'solana rpc connect failed, trying fallback'
+        );
+        this.rotateRpc();
+      }
+    }
+
+    return false;
   }
 
   async unsubscribeAll() {
@@ -152,6 +216,7 @@ class SolanaListener {
       },
       'solana tokens synchronized'
     );
+    this.lastHealthAt = new Date().toISOString();
   }
 
   onProgramLog(programId, logInfo) {
@@ -211,6 +276,8 @@ class SolanaListener {
         );
       }
     } catch (error) {
+      this.lastError = String(error?.message || 'solana parse error');
+      this.lastErrorAt = new Date().toISOString();
       this.logger.error(
         {
           signature,
@@ -229,7 +296,12 @@ class SolanaListener {
 
     try {
       await this.connection.getSlot('processed');
+      this.lastHealthAt = new Date().toISOString();
+      this.lastError = '';
+      this.lastErrorAt = null;
     } catch (error) {
+      this.lastError = String(error?.message || 'solana healthcheck failed');
+      this.lastErrorAt = new Date().toISOString();
       this.logger.error({ err: error.message }, 'solana rpc unhealthy; reconnecting');
       await this.reconnect();
     }
@@ -245,10 +317,36 @@ class SolanaListener {
     try {
       await this.unsubscribeAll();
       await sleep(2_000);
-      await this.connectAndSubscribe();
+      if (this.rpcUrls.length > 1) {
+        this.rotateRpc();
+      }
+      const connected = await this.connectWithAnyRpc();
+      if (!connected) {
+        throw new Error('all solana rpc reconnect attempts failed');
+      }
     } finally {
       this.reconnecting = false;
     }
+  }
+
+  getStatus() {
+    return {
+      network: this.network.key,
+      type: 'solana',
+      running: this.running,
+      reconnecting: this.reconnecting,
+      rpcUrl: this.currentRpcUrl,
+      rpcIndex: this.rpcIndex,
+      rpcPoolSize: this.rpcUrls.length,
+      subscriptions: this.subscriptions.length,
+      trackedTokens: this.trackedTokensByMint.size,
+      queuePending: this.signatureQueue.pending,
+      queueSize: this.signatureQueue.size,
+      lastConnectedAt: this.lastConnectedAt,
+      lastHealthAt: this.lastHealthAt,
+      lastError: this.lastError,
+      lastErrorAt: this.lastErrorAt
+    };
   }
 }
 

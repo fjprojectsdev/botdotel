@@ -42,6 +42,14 @@ const toBoolean = (value, fallback = true) => {
   return fallback;
 };
 
+const toSafeInt = (value, fallback) => {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return parsed;
+};
+
 const createListeners = ({ enabledNetworks, tokenModel, queueService }) => {
   const listeners = [];
 
@@ -126,12 +134,81 @@ const main = async () => {
 
   bootstrapDefaultGroups(tokenModel);
 
+  const groupAutoDisableFailures = Math.max(1, toSafeInt(process.env.GROUP_AUTO_DISABLE_FAILURES, 3));
+  const onTelegramDeliveryResult = (payload) => {
+    try {
+      const results = Array.isArray(payload?.summary?.results) ? payload.summary.results : [];
+      if (!results.length) {
+        return;
+      }
+
+      for (const item of results) {
+        const chatId = String(item?.groupId || '').trim();
+        if (!chatId) {
+          continue;
+        }
+
+        if (item?.sent) {
+          tokenModel.registerGroupDeliverySuccess(chatId);
+          continue;
+        }
+
+        const failure = tokenModel.registerGroupDeliveryFailure(chatId, {
+          error: String(item?.error || ''),
+          errorCode: String(item?.errorCode || '')
+        });
+
+        const isPermanent = Boolean(item?.permanentFailure);
+        if (!isPermanent || !failure || failure.consecutive_failures < groupAutoDisableFailures) {
+          continue;
+        }
+
+        const group = tokenModel.getGroupByChatId(chatId);
+        if (!group || group.enabled !== 1) {
+          continue;
+        }
+
+        tokenModel.setGroupEnabled(group.id, false);
+        tokenModel.markGroupDeliveryAutoDisabled(chatId);
+
+        tokenModel.createIncidentIfNotOpen({
+          unique_key: `group-delivery-disabled:${chatId}`,
+          incident_type: 'group_delivery_disabled',
+          severity: 'high',
+          title: `Grupo desativado automaticamente (${group.label})`,
+          message: `Falhas permanentes consecutivas no Telegram: ${failure.consecutive_failures}. Erro: ${failure.last_error}`,
+          chat_id: chatId,
+          context: {
+            groupId: group.id,
+            label: group.label,
+            consecutiveFailures: failure.consecutive_failures,
+            error: failure.last_error,
+            code: failure.last_error_code
+          }
+        });
+
+        logger.warn(
+          {
+            chatId,
+            label: group.label,
+            consecutiveFailures: failure.consecutive_failures,
+            error: failure.last_error
+          },
+          'group auto-disabled after permanent telegram delivery failures'
+        );
+      }
+    } catch (error) {
+      logger.error({ err: error.message }, 'failed to process telegram delivery health update');
+    }
+  };
+
   const telegramClient = new TelegramClient({
     token: process.env.TELEGRAM_TOKEN,
     groupIds: process.env.GROUP_ID,
     groupResolver: () => tokenModel.getActiveGroupChatIds('buy_alerts'),
     polling: toBoolean(process.env.ENABLE_TELEGRAM_POLLING, true),
-    logger: logger.child({ module: 'telegram' })
+    logger: logger.child({ module: 'telegram' }),
+    onDeliveryResult: onTelegramDeliveryResult
   });
 
   const dexService = new DexService({
@@ -153,6 +230,7 @@ const main = async () => {
     logger: logger.child({ module: 'queue-service' }),
     minUsdAlert: resolveInitialMinUsd(tokenModel)
   });
+  await queueService.start();
 
   const schedulerService = new SchedulerService({
     tokenModel,
@@ -171,6 +249,29 @@ const main = async () => {
     logger: logger.child({ module: 'command-router' })
   });
 
+  const listeners = createListeners({ enabledNetworks, tokenModel, queueService });
+  const runtimeStateProvider = () => ({
+    uptimeSec: Math.floor(process.uptime()),
+    db: {
+      ok: tokenModel.ping(),
+      transactions: tokenModel.countTransactions()
+    },
+    incidents: {
+      open: tokenModel.countOpenIncidents()
+    },
+    queue: queueService.getStatus(),
+    scheduler: schedulerService.getStatus(),
+    telegram: telegramClient.getStatus(),
+    listeners: listeners.map((listener) =>
+      typeof listener.getStatus === 'function'
+        ? listener.getStatus()
+        : {
+            network: listener?.network?.key || 'unknown',
+            running: Boolean(listener?.running)
+          }
+    )
+  });
+
   await schedulerService.start();
   let adminServer = null;
   const dashboardEnabled = toBoolean(process.env.ENABLE_DASHBOARD, true);
@@ -183,7 +284,8 @@ const main = async () => {
         telegramClient,
         schedulerService,
         logger: logger.child({ module: 'admin-server' }),
-        enabledNetworks
+        enabledNetworks,
+        runtimeStateProvider
       });
     } catch (error) {
       logger.error({ err: error.message }, 'admin dashboard failed to start');
@@ -201,8 +303,6 @@ const main = async () => {
   } catch (error) {
     logger.error({ err: error.message }, 'command router startup failed');
   }
-
-  const listeners = createListeners({ enabledNetworks, tokenModel, queueService });
 
   if (!listeners.length) {
     logger.warn({ enabledNetworks }, 'no listeners enabled; process will stay idle');
