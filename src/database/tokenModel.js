@@ -794,7 +794,6 @@ class TokenModel {
       CREATE INDEX IF NOT EXISTS idx_tokens_enabled ON tokens(enabled);
       CREATE INDEX IF NOT EXISTS idx_transactions_hash ON transactions(hash);
       CREATE INDEX IF NOT EXISTS idx_transactions_network_ts ON transactions(network, timestamp);
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_event_uid ON transactions(event_uid);
       CREATE INDEX IF NOT EXISTS idx_member_activity_seen ON member_activity(last_seen DESC);
       CREATE INDEX IF NOT EXISTS idx_member_activity_chat ON member_activity(chat_id, last_seen DESC);
       CREATE INDEX IF NOT EXISTS idx_groups_enabled ON groups(enabled);

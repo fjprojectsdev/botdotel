@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const Database = require('better-sqlite3');
 
 const TokenModel = require('../src/database/tokenModel');
 const { parseEvmSwap, parseSolanaSwap } = require('../src/chains/parser');
@@ -166,5 +167,48 @@ test('TokenModel hashes and verifies admin password', () => {
     assert.equal(model.verifyAdminPassword('senha_errada', hash), false);
   } finally {
     cleanup();
+  }
+});
+
+test('TokenModel migrates legacy transactions table without event_uid before creating index', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buy-alert-legacy-'));
+  const dbPath = path.join(tmpDir, 'legacy.db');
+  const legacyDb = new Database(dbPath);
+  try {
+    legacyDb.exec(`
+      CREATE TABLE transactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        token TEXT NOT NULL,
+        network TEXT NOT NULL,
+        hash TEXT NOT NULL,
+        buyer TEXT NOT NULL,
+        amount REAL NOT NULL,
+        usd_value REAL NOT NULL,
+        timestamp TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `);
+  } finally {
+    legacyDb.close();
+  }
+
+  const model = new TokenModel({
+    dbPath,
+    logger: noopLogger
+  });
+
+  try {
+    model.init();
+    const columns = model.db.prepare('PRAGMA table_info(transactions)').all();
+    const names = columns.map((item) => item.name);
+    assert.ok(names.includes('event_uid'));
+    assert.ok(names.includes('log_index'));
+
+    const indexes = model.db.prepare('PRAGMA index_list(transactions)').all();
+    const hasEventUidIndex = indexes.some((item) => String(item.name || '') === 'idx_transactions_event_uid');
+    assert.equal(hasEventUidIndex, true);
+  } finally {
+    model.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
