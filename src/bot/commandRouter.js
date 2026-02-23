@@ -95,6 +95,24 @@ const BALL_8 = ['Com certeza.', 'Sem duvidas.', 'Sinais dizem que sim.', 'Melhor
 const COIN = ['cara', 'coroa'];
 const MENU_BUTTON_LIMIT = 10;
 const MENU_FALLBACK_TEXT = 'Menu rapido: /start /help /settings /alerts /tokens /ping';
+const TELEGRAM_MENU_PRESET = [
+  'core.start',
+  'core.help',
+  'core.menu',
+  'alerts.alerts',
+  'alerts.tokens',
+  'core.settings',
+  'core.ping'
+];
+const TELEGRAM_MENU_DESCRIPTION = {
+  'core.start': 'Inicia o bot',
+  'core.help': 'Guia rapido de comandos',
+  'core.menu': 'Abre o menu principal',
+  'alerts.alerts': 'Resumo de alertas recentes',
+  'alerts.tokens': 'Lista tokens monitorados',
+  'core.settings': 'Mostra configuracoes atuais',
+  'core.ping': 'Testa resposta do bot'
+};
 
 const text = (value) => String(value || '').trim();
 const isoNow = () => new Date().toISOString();
@@ -118,6 +136,14 @@ const parseOnOff = (value) => {
     return false;
   }
   return null;
+};
+
+const normalizeCommandDescription = (value) => {
+  const raw = text(value).replace(/\s+/g, ' ');
+  if (!raw) {
+    return 'Comando do bot';
+  }
+  return raw.length > 72 ? `${raw.slice(0, 69)}...` : raw;
 };
 
 class CommandRouter {
@@ -221,12 +247,25 @@ class CommandRouter {
   async syncSlashCommands(force = false) {
     try {
       const cache = await this.refreshEnabledCommands(force);
-      const commands = cache.rows
-        .filter((item) => item.enabled === 1 && String(item.name || '').startsWith('/'))
-        .map((item) => ({
-          command: String(item.name || '').slice(1).toLowerCase(),
-          description: String(item.description || '').slice(0, 200)
-        }))
+      const enabledSlashRows = cache.rows.filter((item) => item.enabled === 1 && String(item.name || '').startsWith('/'));
+
+      const byKey = new Map();
+      for (const item of enabledSlashRows) {
+        byKey.set(String(item.command_key || ''), item);
+      }
+
+      const curatedRows = TELEGRAM_MENU_PRESET.map((key) => byKey.get(key)).filter(Boolean);
+      const sourceRows = curatedRows.length ? curatedRows : enabledSlashRows.slice(0, 20);
+      const commands = sourceRows
+        .map((item) => {
+          const key = String(item.command_key || '');
+          return {
+            command: String(item.name || '')
+              .slice(1)
+              .toLowerCase(),
+            description: normalizeCommandDescription(TELEGRAM_MENU_DESCRIPTION[key] || item.description)
+          };
+        })
         .slice(0, 100);
       await this.telegramClient.setMyCommands(commands);
     } catch (error) {
@@ -1091,20 +1130,37 @@ class CommandRouter {
   async handleHelp(ctx) {
     const cache = await this.refreshEnabledCommands();
     const enabled = cache.rows.filter((item) => item.enabled === 1 && String(item.name || '').startsWith('/'));
-    const byCategory = new Map();
-
+    const byName = new Map();
     for (const item of enabled) {
-      if (!byCategory.has(item.category)) {
-        byCategory.set(item.category, []);
+      byName.set(String(item.name || '').toLowerCase(), item);
+    }
+
+    const basic = ['/start', '/menu', '/alerts', '/tokens', '/settings', '/ping']
+      .map((name) => byName.get(name))
+      .filter(Boolean);
+    const admin = ['/warns', '/del', '/purge', '/antispam', '/antilink', '/antiflood']
+      .map((name) => byName.get(name))
+      .filter(Boolean);
+
+    const lines = ['Guia rapido', ''];
+
+    if (basic.length) {
+      lines.push('Basico');
+      for (const item of basic) {
+        lines.push(`- ${item.name}: ${normalizeCommandDescription(item.description)}`);
       }
-      byCategory.get(item.category).push(item.name);
+      lines.push('');
     }
 
-    const lines = ['🤖 Comandos habilitados:'];
-    for (const [category, commands] of byCategory.entries()) {
-      lines.push(`\n• ${category}: ${commands.slice(0, 10).join(' ')}`);
+    if (admin.length) {
+      lines.push('Administracao');
+      for (const item of admin) {
+        lines.push(`- ${item.name}: ${normalizeCommandDescription(item.description)}`);
+      }
+      lines.push('');
     }
 
+    lines.push('Dica: use /menu para abrir os atalhos principais.');
     await this.reply(ctx, lines.join('\n'));
   }
 
