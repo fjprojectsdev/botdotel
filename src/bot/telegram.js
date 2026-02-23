@@ -585,12 +585,20 @@ class TelegramClient {
     return this.bot.telegram.sendDice(chatId, { emoji });
   }
 
-  async setMyCommands(commands) {
+  async setMyCommands(commands, options = {}) {
     if (!this.bot) {
       return false;
     }
 
-    return this.bot.telegram.setMyCommands(commands);
+    return this.bot.telegram.setMyCommands(commands, options);
+  }
+
+  async deleteMyCommands(options = {}) {
+    if (!this.bot) {
+      return false;
+    }
+
+    return this.bot.telegram.deleteMyCommands(options);
   }
 
   getStatus() {

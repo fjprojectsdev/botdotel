@@ -262,6 +262,11 @@ class CommandRouter {
     try {
       await this.refreshEnabledCommands(force);
       await this.telegramClient.setMyCommands(TELEGRAM_SLASH_MENU_FALLBACK);
+      await this.telegramClient.setMyCommands(TELEGRAM_SLASH_MENU_FALLBACK, {
+        scope: { type: 'all_private_chats' }
+      });
+      await this.telegramClient.deleteMyCommands({ scope: { type: 'all_group_chats' } });
+      await this.telegramClient.deleteMyCommands({ scope: { type: 'all_chat_administrators' } });
     } catch (error) {
       this.logger.warn({ err: error.message }, 'failed to sync slash commands');
     }
