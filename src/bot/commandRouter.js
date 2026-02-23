@@ -94,49 +94,28 @@ const MEME_LINKS = [
 const BALL_8 = ['Com certeza.', 'Sem duvidas.', 'Sinais dizem que sim.', 'Melhor nao.', 'Pergunte mais tarde.', 'Nao.'];
 const COIN = ['cara', 'coroa'];
 const MENU_BUTTON_LIMIT = 10;
-const MENU_FALLBACK_TEXT = 'Menu rapido: /start /help /settings /alerts /tokens /ping';
+const MENU_FALLBACK_TEXT = 'Menu rapido: /start /help /addgroup /developer';
 const MENU_SHORTCUT_ROWS = [
   [
-    { label: '📊 Alertas', command: '/alerts' },
-    { label: '🪙 Tokens', command: '/tokens' }
+    { label: 'Ajuda', command: '/help' },
+    { label: 'Adicionar meu grupo', command: '/addgroup' }
   ],
-  [
-    { label: '⚙️ Configuracoes', command: '/settings' },
-    { label: '🤖 Ajuda', command: '/help' }
-  ],
-  [
-    { label: '📌 Regras', command: '/rules' },
-    { label: '👋 Welcome', command: '/welcome' }
-  ],
-  [
-    { label: '🛡️ Locks', command: '/locks' },
-    { label: '⚠️ Warns', command: '/warns' }
-  ],
-  [{ label: '🏓 Ping', command: '/ping' }]
+  [{ label: 'Falar com desenvolvedor', command: '/developer' }]
 ];
 const MENU_SHORTCUT_COMMANDS = new Map(
   MENU_SHORTCUT_ROWS.flatMap((row) =>
     row.map((item) => [String(item.label || '').trim().toLowerCase(), String(item.command || '').trim()])
   )
 );
-const TELEGRAM_SLASH_MENU_PRESET = [
-  'core.start',
-  'core.menu',
-  'core.help',
-  'alerts.alerts',
-  'alerts.tokens',
-  'core.settings',
-  'core.ping'
-];
 const TELEGRAM_SLASH_MENU_FALLBACK = [
   { command: 'start', description: 'Inicia o bot' },
   { command: 'menu', description: 'Abre o menu principal' },
-  { command: 'help', description: 'Guia rapido de comandos' },
-  { command: 'alerts', description: 'Resumo de alertas recentes' },
-  { command: 'tokens', description: 'Lista tokens monitorados' },
-  { command: 'settings', description: 'Mostra configuracoes atuais' },
-  { command: 'ping', description: 'Teste rapido de resposta' }
+  { command: 'help', description: 'Ajuda e instrucoes' },
+  { command: 'addgroup', description: 'Como adicionar meu grupo' },
+  { command: 'developer', description: 'Falar com desenvolvedor' }
 ];
+const PRIVATE_ALLOWED_COMMANDS = new Set(['start', 'menu', 'help', 'addgroup', 'developer', 'dev']);
+
 
 const text = (value) => String(value || '').trim();
 const isoNow = () => new Date().toISOString();
@@ -222,6 +201,10 @@ class CommandRouter {
     return type === 'group' || type === 'supergroup';
   }
 
+  isPrivateChat(chat) {
+    return String(chat?.type || '').toLowerCase() === 'private';
+  }
+
   resolveShortcutToCommand(value) {
     const normalized = String(value || '').trim().toLowerCase();
     return MENU_SHORTCUT_COMMANDS.get(normalized) || '';
@@ -277,27 +260,8 @@ class CommandRouter {
 
   async syncSlashCommands(force = false) {
     try {
-      const cache = await this.refreshEnabledCommands(force);
-      const enabledSlashRows = cache.rows.filter((item) => item.enabled === 1 && String(item.name || '').startsWith('/'));
-      const byKey = new Map(enabledSlashRows.map((item) => [String(item.command_key || ''), item]));
-
-      let commands = TELEGRAM_SLASH_MENU_PRESET.map((key) => byKey.get(key))
-        .filter(Boolean)
-        .map((item) => ({
-          command: String(item.name || '')
-            .slice(1)
-            .toLowerCase()
-            .trim(),
-          description: normalizeCommandDescription(item.description)
-        }))
-        .filter((item) => isValidSlashCommandName(item.command))
-        .slice(0, 20);
-
-      if (!commands.length) {
-        commands = TELEGRAM_SLASH_MENU_FALLBACK;
-      }
-
-      await this.telegramClient.setMyCommands(commands);
+      await this.refreshEnabledCommands(force);
+      await this.telegramClient.setMyCommands(TELEGRAM_SLASH_MENU_FALLBACK);
     } catch (error) {
       this.logger.warn({ err: error.message }, 'failed to sync slash commands');
     }
@@ -724,6 +688,7 @@ class CommandRouter {
 
     return value
       .replaceAll('@(pushName)', firstName)
+      .replaceAll('@pushName', firstName)
       .replaceAll('{name}', firstName)
       .replaceAll('{user}', username)
       .replaceAll('{group}', groupName)
@@ -731,36 +696,44 @@ class CommandRouter {
   }
 
   buildMenuMessage(ctx, config) {
-    if (!config) {
+    if (this.isPrivateChat(ctx?.message?.chat)) {
+      const firstName = text(ctx?.message?.from?.first_name || ctx?.message?.from?.username || 'Usuario');
       return [
-        '⭐ Bem-vindo ao iMavy Bot',
-        'Seu hub rapido para alertas, monitoramento e administracao.',
+        `Ola, ${firstName}!`,
+        'Use o menu abaixo para configurar seu bot rapidamente.',
         '',
-        'Use os botoes abaixo para navegar.'
+        '- /help: ver instrucoes',
+        '- /addgroup: adicionar seu grupo',
+        '- /developer: falar com o desenvolvedor'
       ].join('\n');
     }
 
-    const lines = ['⭐ Bem-vindo ao iMavy Bot'];
+    if (!config) {
+      return MENU_FALLBACK_TEXT;
+    }
+
+    const lines = [];
     const greeting = this.resolveMenuText(config.greeting, ctx);
     const description = this.resolveMenuText(config.description, ctx);
     const siteUrl = text(config.siteUrl);
 
     if (greeting) {
-      lines.push(greeting.replace(/^\(\s*\*\s*\)\s*/g, '').trim());
+      lines.push(greeting);
     }
 
     if (description) {
-      lines.push('');
+      if (lines.length) {
+        lines.push('');
+      }
       lines.push(description);
     }
 
     if (siteUrl) {
-      lines.push('');
+      if (lines.length) {
+        lines.push('');
+      }
       lines.push(`Saiba mais: ${siteUrl}`);
     }
-
-    lines.push('');
-    lines.push('Use os botoes abaixo para navegar.');
 
     return lines.join('\n').trim() || MENU_FALLBACK_TEXT;
   }
@@ -771,7 +744,7 @@ class CommandRouter {
         keyboard: MENU_SHORTCUT_ROWS.map((row) => row.map((item) => ({ text: item.label }))),
         resize_keyboard: true,
         is_persistent: true,
-        input_field_placeholder: 'Escolha um atalho...'
+        input_field_placeholder: 'Escolha uma opcao...'
       }
     };
   }
@@ -779,9 +752,48 @@ class CommandRouter {
   async handleMenu(ctx) {
     const config = this.loadMenuConfig();
     const message = this.buildMenuMessage(ctx, config);
+    const options = this.isPrivateChat(ctx?.message?.chat) ? this.buildMenuKeyboard() : {};
     await this.send(ctx.chatId, message, {
-      ...this.buildMenuKeyboard()
+      ...options
     });
+  }
+
+  async handleAddGroup(ctx) {
+    const me = await this.telegramClient.getMe().catch(() => null);
+    const username = text(me?.username);
+    const addLink = username ? `https://t.me/${username}?startgroup=true` : '';
+
+    const lines = [
+      'Como adicionar seu grupo:',
+      '1. Toque em "Adicionar membro" no seu grupo.',
+      '2. Procure por este bot e adicione.',
+      '3. De permissao de administrador (recomendado).',
+      '4. No grupo, envie /start para ativar.'
+    ];
+
+    if (addLink) {
+      lines.push('');
+      lines.push(`Link direto: ${addLink}`);
+    }
+
+    await this.send(ctx.chatId, lines.join('\n'));
+  }
+
+  async handleDeveloper(ctx) {
+    const contact = text(process.env.DEVELOPER_CONTACT || process.env.SUPPORT_CONTACT || 'https://t.me/imavyagent');
+    await this.send(ctx.chatId, `Fale com o desenvolvedor: ${contact}`);
+  }
+
+  async handlePrivateHelp(ctx) {
+    await this.send(
+      ctx.chatId,
+      [
+        'Ajuda rapida',
+        '- /start ou /menu: abre o menu inicial',
+        '- /addgroup: guia para adicionar seu grupo',
+        '- /developer: contato do desenvolvedor'
+      ].join('\n')
+    );
   }
 
   updateFlood(chatId, userId) {
@@ -856,6 +868,38 @@ class CommandRouter {
       }
     }
 
+    const chatId = String(message.chat.id);
+    const userId = String(message.from.id);
+
+    if (this.isPrivateChat(message.chat)) {
+      const privateCtx = { chatId, userId, message, argsRaw, args, group };
+
+      if (commandName === 'start' || commandName === 'menu') {
+        await this.handleMenu(privateCtx);
+        return;
+      }
+
+      if (commandName === 'help') {
+        await this.handlePrivateHelp(privateCtx);
+        return;
+      }
+
+      if (commandName === 'addgroup') {
+        await this.handleAddGroup(privateCtx);
+        return;
+      }
+
+      if (commandName === 'developer' || commandName === 'dev') {
+        await this.handleDeveloper(privateCtx);
+        return;
+      }
+
+      if (!PRIVATE_ALLOWED_COMMANDS.has(commandName)) {
+        await this.send(chatId, 'No privado, use: /help, /addgroup ou /developer.');
+        return;
+      }
+    }
+
     const command = this.commandByName.get(commandName);
     if (!command) {
       return;
@@ -865,8 +909,6 @@ class CommandRouter {
       return;
     }
 
-    const chatId = String(message.chat.id);
-    const userId = String(message.from.id);
     const ctx = { chatId, userId, message, command, argsRaw, args, group };
 
     if (command.groupOnly && !this.isGroup(message.chat)) {
