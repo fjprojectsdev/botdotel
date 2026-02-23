@@ -12,6 +12,11 @@ class TelegramClient {
     this.bot = token ? new Telegraf(token, { handlerTimeout: 60_000 }) : null;
     this.warnedNoGroup = false;
     this.pollingStarted = false;
+    this.pollingBooting = false;
+    this.pollingLaunchPromise = null;
+    this.pollingRestartTimer = null;
+    this.pollingErrorBound = false;
+    this.isClosing = false;
     this.me = null;
 
     if (!this.bot) {
@@ -25,31 +30,79 @@ class TelegramClient {
   }
 
   async start() {
-    if (!this.bot || !this.enablePolling || this.pollingStarted) {
+    if (!this.bot || !this.enablePolling || this.pollingStarted || this.pollingBooting || this.isClosing) {
       return;
     }
 
-    await this.bot.launch({
-      dropPendingUpdates: false,
-      polling: {
-        timeout: 30,
-        allowedUpdates: ['message'],
-        ...this.pollingParams
-      }
-    });
-    this.pollingStarted = true;
-    this.logger.info('telegram polling started');
+    this.isClosing = false;
+    this.pollingBooting = true;
 
-    this.bot.catch((error) => {
-      this.logger.error({ err: error.message }, 'telegram polling error');
-    });
+    if (!this.pollingErrorBound) {
+      this.bot.catch((error) => {
+        this.logger.error({ err: error.message }, 'telegram polling error');
+      });
+      this.pollingErrorBound = true;
+    }
 
     try {
-      this.me = await this.bot.telegram.getMe();
-      this.logger.info({ username: this.me?.username || '' }, 'telegram bot identity loaded');
+      if (!this.me) {
+        this.me = await this.bot.telegram.getMe();
+        this.logger.info({ username: this.me?.username || '' }, 'telegram bot identity loaded');
+      }
+
+      const launchPromise = this.bot.launch({
+        dropPendingUpdates: false,
+        polling: {
+          timeout: 30,
+          allowedUpdates: ['message'],
+          ...this.pollingParams
+        }
+      });
+
+      this.pollingLaunchPromise = launchPromise;
+      this.pollingStarted = true;
+      this.pollingBooting = false;
+      this.logger.info('telegram polling started');
+
+      launchPromise
+        .then(() => {
+          if (this.pollingLaunchPromise !== launchPromise) {
+            return;
+          }
+          this.pollingLaunchPromise = null;
+          this.pollingStarted = false;
+          this.logger.warn('telegram polling stopped');
+          this.schedulePollingRestart();
+        })
+        .catch((error) => {
+          if (this.pollingLaunchPromise !== launchPromise) {
+            return;
+          }
+          this.pollingLaunchPromise = null;
+          this.pollingStarted = false;
+          this.logger.error({ err: error.message }, 'telegram polling launch failed');
+          this.schedulePollingRestart();
+        });
     } catch (error) {
-      this.logger.warn({ err: error.message }, 'failed to fetch telegram bot identity');
+      this.pollingBooting = false;
+      this.pollingStarted = false;
+      this.pollingLaunchPromise = null;
+      this.logger.error({ err: error.message }, 'telegram startup failed');
+      this.schedulePollingRestart();
     }
+  }
+
+  schedulePollingRestart() {
+    if (!this.enablePolling || this.pollingRestartTimer || this.isClosing) {
+      return;
+    }
+
+    this.pollingRestartTimer = setTimeout(() => {
+      this.pollingRestartTimer = null;
+      this.start().catch((error) => {
+        this.logger.error({ err: error.message }, 'telegram polling restart failed');
+      });
+    }, 5000);
   }
 
   onMessage(handler) {
@@ -480,6 +533,13 @@ class TelegramClient {
       return;
     }
 
+    this.isClosing = true;
+
+    if (this.pollingRestartTimer) {
+      clearTimeout(this.pollingRestartTimer);
+      this.pollingRestartTimer = null;
+    }
+
     if (this.enablePolling && this.pollingStarted) {
       try {
         this.bot.stop('manual-stop');
@@ -488,6 +548,8 @@ class TelegramClient {
       }
       this.pollingStarted = false;
     }
+    this.pollingBooting = false;
+    this.pollingLaunchPromise = null;
   }
 }
 

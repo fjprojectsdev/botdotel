@@ -42,26 +42,6 @@ const toBoolean = (value, fallback = true) => {
   return fallback;
 };
 
-const withTimeout = async (promise, timeoutMs, timeoutMessage) => {
-  const ms = Number(timeoutMs);
-  if (!Number.isFinite(ms) || ms <= 0) {
-    return promise;
-  }
-
-  let timer = null;
-  const timeoutPromise = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(timeoutMessage)), ms);
-  });
-
-  try {
-    return await Promise.race([promise, timeoutPromise]);
-  } finally {
-    if (timer) {
-      clearTimeout(timer);
-    }
-  }
-};
-
 const createListeners = ({ enabledNetworks, tokenModel, queueService }) => {
   const listeners = [];
 
@@ -210,15 +190,10 @@ const main = async () => {
     }
   }
 
-  const telegramBootTimeoutMs = Number(process.env.TELEGRAM_BOOT_TIMEOUT_MS || 20000);
   try {
-    await withTimeout(
-      telegramClient.start(),
-      telegramBootTimeoutMs,
-      `telegram startup timeout (${telegramBootTimeoutMs}ms)`
-    );
+    await telegramClient.start();
   } catch (error) {
-    logger.error({ err: error.message }, 'telegram startup failed; continuing without polling');
+    logger.error({ err: error.message }, 'telegram startup failed');
   }
 
   try {
