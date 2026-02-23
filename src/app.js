@@ -42,6 +42,26 @@ const toBoolean = (value, fallback = true) => {
   return fallback;
 };
 
+const withTimeout = async (promise, timeoutMs, timeoutMessage) => {
+  const ms = Number(timeoutMs);
+  if (!Number.isFinite(ms) || ms <= 0) {
+    return promise;
+  }
+
+  let timer = null;
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(timeoutMessage)), ms);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+};
+
 const createListeners = ({ enabledNetworks, tokenModel, queueService }) => {
   const listeners = [];
 
@@ -172,8 +192,40 @@ const main = async () => {
   });
 
   await schedulerService.start();
-  await telegramClient.start();
-  await commandRouter.start();
+  let adminServer = null;
+  const dashboardEnabled = toBoolean(process.env.ENABLE_DASHBOARD, true);
+
+  if (dashboardEnabled) {
+    try {
+      adminServer = await startAdminServer({
+        tokenModel,
+        queueService,
+        telegramClient,
+        schedulerService,
+        logger: logger.child({ module: 'admin-server' }),
+        enabledNetworks
+      });
+    } catch (error) {
+      logger.error({ err: error.message }, 'admin dashboard failed to start');
+    }
+  }
+
+  const telegramBootTimeoutMs = Number(process.env.TELEGRAM_BOOT_TIMEOUT_MS || 20000);
+  try {
+    await withTimeout(
+      telegramClient.start(),
+      telegramBootTimeoutMs,
+      `telegram startup timeout (${telegramBootTimeoutMs}ms)`
+    );
+  } catch (error) {
+    logger.error({ err: error.message }, 'telegram startup failed; continuing without polling');
+  }
+
+  try {
+    await commandRouter.start();
+  } catch (error) {
+    logger.error({ err: error.message }, 'command router startup failed');
+  }
 
   const listeners = createListeners({ enabledNetworks, tokenModel, queueService });
 
@@ -184,20 +236,6 @@ const main = async () => {
     for (const listener of listeners) {
       await listener.start();
     }
-  }
-
-  let adminServer = null;
-  const dashboardEnabled = toBoolean(process.env.ENABLE_DASHBOARD, true);
-
-  if (dashboardEnabled) {
-    adminServer = await startAdminServer({
-      tokenModel,
-      queueService,
-      telegramClient,
-      schedulerService,
-      logger: logger.child({ module: 'admin-server' }),
-      enabledNetworks
-    });
   }
 
   let shuttingDown = false;
