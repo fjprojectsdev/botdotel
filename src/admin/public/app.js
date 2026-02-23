@@ -42,6 +42,7 @@ const state = {
   memberSearch: '',
   commandSearch: '',
   scheduleSearch: '',
+  automationGroupId: null,
   openCommandCategories: new Set(),
   apiBase: '',
   authToken: '',
@@ -168,6 +169,7 @@ const refs = {
   memberSearchInput: document.getElementById('memberSearchInput'),
   commandSearchInput: document.getElementById('commandSearchInput'),
   scheduleSearchInput: document.getElementById('scheduleSearchInput'),
+  automationGroupSelect: document.getElementById('automationGroupSelect'),
 
   commandsEnableAllBtn: document.getElementById('commandsEnableAllBtn'),
   commandsDisableAllBtn: document.getElementById('commandsDisableAllBtn'),
@@ -919,7 +921,22 @@ const getGroupLabelById = (chatId) => {
   return found ? found.label : shortText(chatId, 8, 5);
 };
 
-const getPrimaryActiveGroup = () => state.groups.find((group) => isEnabled(group.enabled)) || null;
+const ensureAutomationGroupSelection = () => {
+  const activeGroups = state.groups.filter((group) => isEnabled(group.enabled));
+  if (!activeGroups.length) {
+    state.automationGroupId = null;
+    return null;
+  }
+
+  const selectedId = Number(state.automationGroupId || 0);
+  const selected = activeGroups.find((group) => Number(group.id) === selectedId);
+  if (selected) {
+    return selected;
+  }
+
+  state.automationGroupId = Number(activeGroups[0].id);
+  return activeGroups[0];
+};
 
 const syncGroupLockByCommand = async (commandKey, enabled) => {
   const lockKey = SECURITY_LOCK_BY_COMMAND[String(commandKey || '')];
@@ -927,7 +944,7 @@ const syncGroupLockByCommand = async (commandKey, enabled) => {
     return;
   }
 
-  const activeGroup = getPrimaryActiveGroup();
+  const activeGroup = ensureAutomationGroupSelection();
   if (!activeGroup) {
     return;
   }
@@ -939,7 +956,7 @@ const syncGroupLockByCommand = async (commandKey, enabled) => {
 };
 
 const syncSecurityLocksBulk = async (enabled) => {
-  const activeGroup = getPrimaryActiveGroup();
+  const activeGroup = ensureAutomationGroupSelection();
   if (!activeGroup) {
     return;
   }
@@ -1054,7 +1071,8 @@ const renderScopeChip = () => {
     return;
   }
 
-  refs.activeScope.textContent = `${activeGroups[0].label} (${activeGroups.length} ativo${
+  const automationGroup = ensureAutomationGroupSelection() || activeGroups[0];
+  refs.activeScope.textContent = `${automationGroup.label} (${activeGroups.length} ativo${
     activeGroups.length > 1 ? 's' : ''
   })`;
 };
@@ -1222,7 +1240,7 @@ const renderGroups = () => {
   refs.groupCards.innerHTML = groups
     .map((group) => {
       const enabled = isEnabled(group.enabled);
-      const memberHint = Math.max(2, Math.floor((Number(group.id) || 1) * 1.7) % 350);
+      const memberCount = Math.max(0, Number(group.member_count || 0));
       const permissions = parseGroupPermissions(group.permissions, { fallbackToDefault: false });
       const permissionsHtml = permissions.length
         ? permissions.map((permission) => `<span class="permission-chip">${escapeHtml(permission)}</span>`).join('')
@@ -1242,7 +1260,7 @@ const renderGroups = () => {
           <span class="status-badge ${enabled ? 'status-badge-ok' : 'status-badge-off'}"><i class="status-dot ${
             enabled ? 'ok' : 'off'
           }"></i>${enabled ? 'Ativo' : 'Pausado'}</span>
-          <span class="group-members-count">${memberHint} membros</span>
+          <span class="group-members-count">${memberCount} membros</span>
         </div>
         <div class="group-permissions">
           ${permissionsHtml}
@@ -1503,12 +1521,33 @@ const renderSchedules = () => {
     .join('');
 };
 
+const renderAutomationGroupSelect = () => {
+  if (!refs.automationGroupSelect) {
+    return;
+  }
+
+  const activeGroups = state.groups.filter((group) => isEnabled(group.enabled));
+  if (!activeGroups.length) {
+    refs.automationGroupSelect.innerHTML = '<option value="">Nenhum grupo ativo</option>';
+    refs.automationGroupSelect.value = '';
+    refs.automationGroupSelect.disabled = true;
+    return;
+  }
+
+  const selected = ensureAutomationGroupSelection();
+  refs.automationGroupSelect.innerHTML = activeGroups
+    .map((group) => `<option value="${group.id}">${escapeHtml(group.label)}</option>`)
+    .join('');
+  refs.automationGroupSelect.disabled = false;
+  refs.automationGroupSelect.value = String(selected?.id || activeGroups[0].id);
+};
+
 const renderAutomation = () => {
   if (!refs.automationModulesList) {
     return;
   }
 
-  const activeGroup = getPrimaryActiveGroup();
+  const activeGroup = ensureAutomationGroupSelection();
   if (!activeGroup) {
     refs.automationModulesList.innerHTML = '<p class="placeholder">Ative um grupo para configurar automacoes.</p>';
     refs.strikeTriggersList.innerHTML = '<p class="placeholder">Ative um grupo para configurar gatilhos.</p>';
@@ -1866,6 +1905,58 @@ const ensureApiConnectivity = async ({ forcePrompt = false, allowPrompt = true, 
   }
 };
 
+const emptyAutomationOverview = () => ({
+  pending: 0,
+  resolved: 0,
+  bans: 0,
+  strikes: 0
+});
+
+const resetAutomationState = () => {
+  state.automation = {
+    modules: [],
+    strikeTriggers: [],
+    strikeLadder: [],
+    whitelist: [],
+    logs: [],
+    overview: emptyAutomationOverview()
+  };
+
+  state.moderation = {
+    overview: emptyAutomationOverview(),
+    logs: []
+  };
+};
+
+const loadAutomationState = async () => {
+  const activeGroup = ensureAutomationGroupSelection();
+  if (!activeGroup?.id) {
+    resetAutomationState();
+    return null;
+  }
+
+  const [automationPayload, moderationPayload] = await Promise.all([
+    apiFetch(`/api/groups/${activeGroup.id}/automation?limit=180`),
+    apiFetch(`/api/moderation?groupId=${encodeURIComponent(activeGroup.id)}&limit=180`)
+  ]);
+
+  state.automation = {
+    modules: automationPayload?.modules || [],
+    strikeTriggers: automationPayload?.strikeTriggers || [],
+    strikeLadder: automationPayload?.strikeLadder || [],
+    whitelist: automationPayload?.whitelist || [],
+    logs: automationPayload?.logs || [],
+    overview: automationPayload?.overview || emptyAutomationOverview()
+  };
+
+  state.moderation = {
+    overview: moderationPayload?.overview || state.automation.overview,
+    logs: moderationPayload?.logs || state.automation.logs || []
+  };
+
+  return activeGroup;
+};
+
 const renderAll = () => {
   renderView();
   renderScopeChip();
@@ -1878,6 +1969,7 @@ const renderAll = () => {
   renderMembers();
   renderCommands();
   renderSchedules();
+  renderAutomationGroupSelect();
   renderAutomation();
   renderModeration();
   renderBroadcastGroupChecklist();
@@ -1937,56 +2029,8 @@ const loadData = async ({ silent = false, suppressErrors = false } = {}) => {
       state.schedules = schedulesPayload?.schedules || [];
       state.broadcasts = broadcastsPayload?.broadcasts || [];
       setCommandCategories(commandsPayload?.categories || []);
-
-      const activeGroup = getPrimaryActiveGroup();
-      if (activeGroup?.id) {
-        const [automationPayload, moderationPayload] = await Promise.all([
-          apiFetch(`/api/groups/${activeGroup.id}/automation?limit=180`),
-          apiFetch(`/api/moderation?groupId=${encodeURIComponent(activeGroup.id)}&limit=180`)
-        ]);
-
-        state.automation = {
-          modules: automationPayload?.modules || [],
-          strikeTriggers: automationPayload?.strikeTriggers || [],
-          strikeLadder: automationPayload?.strikeLadder || [],
-          whitelist: automationPayload?.whitelist || [],
-          logs: automationPayload?.logs || [],
-          overview: automationPayload?.overview || {
-            pending: 0,
-            resolved: 0,
-            bans: 0,
-            strikes: 0
-          }
-        };
-
-        state.moderation = {
-          overview: moderationPayload?.overview || state.automation.overview,
-          logs: moderationPayload?.logs || state.automation.logs || []
-        };
-      } else {
-        state.automation = {
-          modules: [],
-          strikeTriggers: [],
-          strikeLadder: [],
-          whitelist: [],
-          logs: [],
-          overview: {
-            pending: 0,
-            resolved: 0,
-            bans: 0,
-            strikes: 0
-          }
-        };
-        state.moderation = {
-          overview: {
-            pending: 0,
-            resolved: 0,
-            bans: 0,
-            strikes: 0
-          },
-          logs: []
-        };
-      }
+      ensureAutomationGroupSelection();
+      await loadAutomationState();
 
       applyPeriodFilter();
       renderAll();
@@ -2461,7 +2505,7 @@ const handleScheduleSave = async () => {
 };
 
 const getActiveGroupForAutomation = () => {
-  const active = getPrimaryActiveGroup();
+  const active = ensureAutomationGroupSelection();
   if (!active?.id) {
     throw new Error('Nenhum grupo ativo para automacao.');
   }
@@ -2636,7 +2680,7 @@ const bindEvents = () => {
   refs.testAlertBtn.addEventListener('click', () =>
     withButtonLock(refs.testAlertBtn, async () => {
       closeActionsMenu();
-      const activeGroup = state.groups.find((group) => isEnabled(group.enabled));
+      const activeGroup = ensureAutomationGroupSelection();
       const tokenWithMedia = state.tokens.find((item) => String(item.buy_media_url || '').trim());
       const mediaUrl = normalizeOptionalMediaUrl(
         tokenWithMedia?.buy_media_url || state.settings?.settings?.media_buy_alert_url || ''
@@ -2686,6 +2730,24 @@ const bindEvents = () => {
       }
       state.automationTab = tab.dataset.automationTab || 'modules';
       renderAutomation();
+    });
+  }
+
+  if (refs.automationGroupSelect) {
+    refs.automationGroupSelect.addEventListener('change', () => {
+      const selectedId = Number(refs.automationGroupSelect.value || 0);
+      state.automationGroupId = selectedId > 0 ? selectedId : null;
+
+      loadAutomationState()
+        .then(() => {
+          renderScopeChip();
+          renderAutomationGroupSelect();
+          renderAutomation();
+          renderModeration();
+        })
+        .catch((error) => {
+          showToast(error.message || 'Falha ao carregar automacoes do grupo.', true);
+        });
     });
   }
 

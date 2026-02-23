@@ -479,64 +479,73 @@ class CommandRouter {
 
     if (action === 'mute') {
       const minutes = Math.max(1, Number(stepConfig.duration_minutes) || 30);
+      let actionError = null;
       try {
         await this.telegramClient.muteUser(safeChatId, Number(userId), minutes);
-      } catch (_error) {
-        // ignore moderation action errors
+      } catch (error) {
+        actionError = error;
+        this.logger.warn({ chatId: safeChatId, userId, err: error.message }, 'mute action failed');
       }
       await this.send(safeChatId, message);
       await this.logModerationEvent(safeChatId, {
         user_id: userId,
         actor_id: 'auto',
         event_type: 'punishment.mute',
-        status: 'resolved',
+        status: actionError ? 'received' : 'resolved',
         reason,
         details: {
           strikes: total,
           step: stepConfig.step,
-          duration_minutes: minutes
+          duration_minutes: minutes,
+          error: actionError ? actionError.message : ''
         }
       });
       return;
     }
 
     if (action === 'kick') {
+      let actionError = null;
       try {
         await this.telegramClient.kickUser(safeChatId, Number(userId));
-      } catch (_error) {
-        // ignore moderation action errors
+      } catch (error) {
+        actionError = error;
+        this.logger.warn({ chatId: safeChatId, userId, err: error.message }, 'kick action failed');
       }
       await this.send(safeChatId, message);
       await this.logModerationEvent(safeChatId, {
         user_id: userId,
         actor_id: 'auto',
         event_type: 'punishment.kick',
-        status: 'resolved',
+        status: actionError ? 'received' : 'resolved',
         reason,
         details: {
           strikes: total,
-          step: stepConfig.step
+          step: stepConfig.step,
+          error: actionError ? actionError.message : ''
         }
       });
       return;
     }
 
     if (action === 'ban') {
+      let actionError = null;
       try {
         await this.telegramClient.banUser(safeChatId, Number(userId), { revoke_messages: true });
-      } catch (_error) {
-        // ignore moderation action errors
+      } catch (error) {
+        actionError = error;
+        this.logger.warn({ chatId: safeChatId, userId, err: error.message }, 'ban action failed');
       }
       await this.send(safeChatId, message);
       await this.logModerationEvent(safeChatId, {
         user_id: userId,
         actor_id: 'auto',
         event_type: 'punishment.ban',
-        status: 'resolved',
+        status: actionError ? 'received' : 'resolved',
         reason,
         details: {
           strikes: total,
-          step: stepConfig.step
+          step: stepConfig.step,
+          error: actionError ? actionError.message : ''
         }
       });
     }

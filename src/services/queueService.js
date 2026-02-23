@@ -194,11 +194,29 @@ class QueueService {
       const message = this.formatService.formatBuyAlert(enriched);
       const mediaUrl = this.getBuyAlertMediaUrl(enriched);
 
-      await this.telegramQueue.add(() =>
+      const delivery = await this.telegramQueue.add(() =>
         this.telegramClient.sendAlert(message, {
           mediaUrl: mediaUrl || undefined
         })
       );
+
+      const delivered = Math.max(0, Number(delivery?.delivered) || 0);
+      const attempted = Math.max(0, Number(delivery?.attempted) || 0);
+      if (!delivered) {
+        this.logger.warn(
+          {
+            network: enriched.network,
+            token: enriched.tokenSymbol,
+            hash: enriched.hash,
+            usdValue,
+            media: Boolean(mediaUrl),
+            attempted,
+            reason: String(delivery?.reason || 'not delivered')
+          },
+          'buy alert persisted but not delivered to telegram'
+        );
+        return;
+      }
 
       this.logger.info(
         {
@@ -206,7 +224,9 @@ class QueueService {
           token: enriched.tokenSymbol,
           hash: enriched.hash,
           usdValue,
-          media: Boolean(mediaUrl)
+          media: Boolean(mediaUrl),
+          attempted,
+          delivered
         },
         'buy alert sent'
       );

@@ -664,6 +664,24 @@ const scheduleMessageText = (schedule) => {
   return `${prefix}\n\n${schedule.content}`;
 };
 
+const computeNextDailyIso = (sendAtIso) => {
+  const base = new Date(sendAtIso);
+  if (Number.isNaN(base.getTime())) {
+    return new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+  }
+
+  const dayMs = 24 * 60 * 60 * 1000;
+  let nextMs = base.getTime();
+  const nowMs = Date.now();
+
+  if (nextMs <= nowMs) {
+    const jumps = Math.floor((nowMs - nextMs) / dayMs) + 1;
+    nextMs += jumps * dayMs;
+  }
+
+  return new Date(nextMs).toISOString();
+};
+
 const startAdminServer = async ({
   tokenModel,
   queueService,
@@ -906,7 +924,12 @@ const startAdminServer = async ({
     asyncRoute(async (req, res) => {
       const includeDisabled = asBoolean(req.query.includeDisabled, true);
       const groups = tokenModel.listGroups({ includeDisabled });
-      res.json({ groups });
+      const memberCounts = tokenModel.getGroupMemberCounts();
+      const normalizedGroups = groups.map((group) => ({
+        ...group,
+        member_count: Math.max(0, Number(memberCounts[String(group.chat_id || '').trim()] || 0))
+      }));
+      res.json({ groups: normalizedGroups });
     })
   );
 
@@ -1220,7 +1243,7 @@ const startAdminServer = async ({
           reactions_count: Number(item.reactions_count || 0),
           volume_usd: Number(item.volume_usd || 0),
           last_seen: item.last_seen,
-          group_label: groups[0]?.label || 'Alertas'
+          group_label: 'Global'
         }));
       }
 
@@ -1363,19 +1386,36 @@ const startAdminServer = async ({
         logger.warn({ scheduleId: schedule.id, err: error.message }, 'invalid schedule media url; sending text only');
       }
 
-      await telegramClient.sendAlert(message, {
+      const delivery = await telegramClient.sendAlert(message, {
         chatIds: targets.length ? targets : undefined,
         mediaUrl: mediaUrl || undefined
       });
+      const delivered = Math.max(0, Number(delivery?.delivered) || 0);
+
+      if (!delivered) {
+        const reason = String(delivery?.reason || 'telegram delivery returned zero recipients');
+        tokenModel.markScheduleFailed(schedule.id, reason);
+        return res.status(502).json({
+          error: 'schedule not delivered',
+          delivery
+        });
+      }
 
       if (schedule.recurrence === 'daily') {
-        const next = new Date(new Date(schedule.send_at).getTime() + 24 * 60 * 60 * 1000).toISOString();
+        const next = computeNextDailyIso(schedule.send_at);
         tokenModel.rescheduleDaily(schedule.id, next);
       } else {
         tokenModel.markScheduleSent(schedule.id);
       }
 
-      return res.json({ ok: true, schedule: tokenModel.getScheduleById(id) });
+      return res.json({
+        ok: true,
+        delivery: {
+          attempted: Number(delivery?.attempted || 0),
+          delivered
+        },
+        schedule: tokenModel.getScheduleById(id)
+      });
     })
   );
 
@@ -1540,18 +1580,29 @@ const startAdminServer = async ({
       let failCount = 0;
       for (const chatId of groups) {
         try {
+          let deliveredToGroup = false;
+
           if (payload.media_url) {
             const content = String(payload.content || '');
             if (content.length <= 1024) {
-              await telegramClient.sendPhoto(chatId, payload.media_url, content);
+              const photoResult = await telegramClient.sendPhoto(chatId, payload.media_url, content);
+              deliveredToGroup = Boolean(photoResult?.sent);
             } else {
-              await telegramClient.sendPhoto(chatId, payload.media_url, payload.title || 'Broadcast');
-              await telegramClient.sendMessage(chatId, content);
+              const photoResult = await telegramClient.sendPhoto(chatId, payload.media_url, payload.title || 'Broadcast');
+              const textResult = await telegramClient.sendMessage(chatId, content);
+              deliveredToGroup = Boolean(photoResult?.sent) && Boolean(textResult?.sent);
             }
           } else {
-            await telegramClient.sendMessage(chatId, payload.content);
+            const textResult = await telegramClient.sendMessage(chatId, payload.content);
+            deliveredToGroup = Boolean(textResult?.sent);
           }
-          sentCount += 1;
+
+          if (deliveredToGroup) {
+            sentCount += 1;
+          } else {
+            failCount += 1;
+            logger.warn({ chatId }, 'broadcast not delivered for target group');
+          }
         } catch (error) {
           failCount += 1;
           logger.warn({ chatId, err: error.message }, 'broadcast send failed for target group');
@@ -1587,12 +1638,22 @@ const startAdminServer = async ({
       const chatId = String(req.body?.chatId || '').trim();
       const mediaUrl = normalizeMediaUrl(req.body?.mediaUrl || '', 'test media url');
 
-      await telegramClient.sendAlert(message, {
+      const delivery = await telegramClient.sendAlert(message, {
         chatIds: chatId ? [chatId] : undefined,
         mediaUrl: mediaUrl || undefined
       });
 
-      res.json({ ok: true });
+      if (!Number(delivery?.delivered || 0)) {
+        return res.status(502).json({
+          error: 'test alert not delivered',
+          delivery
+        });
+      }
+
+      res.json({
+        ok: true,
+        delivery
+      });
     })
   );
 

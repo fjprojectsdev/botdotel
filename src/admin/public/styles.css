@@ -772,6 +772,18 @@ textarea:focus,
   gap: 8px;
 }
 
+.automation-scope-field {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  color: #9aa8cd;
+  max-width: 360px;
+}
+
+.automation-scope-field select {
+  min-width: 260px;
+}
+
 .chip-cloud {
   margin-top: 14px;
   display: flex;
@@ -1933,6 +1945,13 @@ td {
   .filter-row,
   .filter-row-wide {
     grid-template-columns: 1fr;
+  }
+
+  .automation-scope-field,
+  .automation-scope-field select {
+    width: 100%;
+    max-width: none;
+    min-width: 0;
   }
 
   .stack-item {

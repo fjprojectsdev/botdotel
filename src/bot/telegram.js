@@ -1,4 +1,4 @@
-const TelegramBot = require('node-telegram-bot-api');
+const { Telegraf } = require('telegraf');
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -9,23 +9,7 @@ class TelegramClient {
     this.groupResolver = typeof groupResolver === 'function' ? groupResolver : null;
     this.enablePolling = Boolean(polling);
     this.pollingParams = pollingParams && typeof pollingParams === 'object' ? pollingParams : {};
-    this.bot = token
-      ? new TelegramBot(
-          token,
-          this.enablePolling
-            ? {
-                polling: {
-                  autoStart: false,
-                  params: {
-                    timeout: 30,
-                    allowed_updates: ['message'],
-                    ...this.pollingParams
-                  }
-                }
-              }
-            : { polling: false }
-        )
-      : null;
+    this.bot = token ? new Telegraf(token, { handlerTimeout: 60_000 }) : null;
     this.warnedNoGroup = false;
     this.pollingStarted = false;
     this.me = null;
@@ -45,16 +29,23 @@ class TelegramClient {
       return;
     }
 
-    await this.bot.startPolling();
+    await this.bot.launch({
+      dropPendingUpdates: false,
+      polling: {
+        timeout: 30,
+        allowedUpdates: ['message'],
+        ...this.pollingParams
+      }
+    });
     this.pollingStarted = true;
     this.logger.info('telegram polling started');
 
-    this.bot.on('polling_error', (error) => {
+    this.bot.catch((error) => {
       this.logger.error({ err: error.message }, 'telegram polling error');
     });
 
     try {
-      this.me = await this.bot.getMe();
+      this.me = await this.bot.telegram.getMe();
       this.logger.info({ username: this.me?.username || '' }, 'telegram bot identity loaded');
     } catch (error) {
       this.logger.warn({ err: error.message }, 'failed to fetch telegram bot identity');
@@ -66,7 +57,8 @@ class TelegramClient {
       return;
     }
 
-    this.bot.on('message', (message) => {
+    this.bot.on('message', (ctx) => {
+      const message = ctx?.update?.message || ctx?.message;
       Promise.resolve(handler(message)).catch((error) => {
         this.logger.error({ err: error.message }, 'telegram message handler failed');
       });
@@ -116,7 +108,13 @@ class TelegramClient {
 
   async sendMessage(chatId, message, options = {}) {
     if (!this.bot) {
-      return;
+      return {
+        sent: false,
+        skipped: true,
+        reason: 'bot_unavailable',
+        operation: 'sendMessage',
+        chatId: String(chatId || '').trim()
+      };
     }
 
     const targetChatId = String(chatId || '').trim();
@@ -124,15 +122,22 @@ class TelegramClient {
       throw new Error('chat id is required');
     }
 
-    return this.sendWithRetry(
+    const response = await this.sendWithRetry(
       targetChatId,
       () =>
-        this.bot.sendMessage(targetChatId, String(message || ''), {
+        this.bot.telegram.sendMessage(targetChatId, String(message || ''), {
           disable_web_page_preview: true,
           ...options
         }),
       'sendMessage'
     );
+    return {
+      sent: true,
+      skipped: false,
+      operation: 'sendMessage',
+      chatId: targetChatId,
+      response
+    };
   }
 
   normalizeMediaUrl(value) {
@@ -154,7 +159,13 @@ class TelegramClient {
 
   async sendPhoto(chatId, mediaUrl, caption = '', options = {}) {
     if (!this.bot) {
-      return;
+      return {
+        sent: false,
+        skipped: true,
+        reason: 'bot_unavailable',
+        operation: 'sendPhoto',
+        chatId: String(chatId || '').trim()
+      };
     }
 
     const targetChatId = String(chatId || '').trim();
@@ -168,20 +179,36 @@ class TelegramClient {
 
     const captionText = String(caption || '').trim();
 
-    return this.sendWithRetry(
+    const response = await this.sendWithRetry(
       targetChatId,
       () =>
-        this.bot.sendPhoto(targetChatId, photo, {
+        this.bot.telegram.sendPhoto(targetChatId, photo, {
           ...(captionText ? { caption: captionText } : {}),
           ...options
         }),
       'sendPhoto'
     );
+    return {
+      sent: true,
+      skipped: false,
+      operation: 'sendPhoto',
+      chatId: targetChatId,
+      response
+    };
   }
 
   async sendAlert(message, options = {}) {
     if (!this.bot) {
-      return;
+      return {
+        ok: false,
+        attempted: 0,
+        delivered: 0,
+        failed: 0,
+        fallbackUsed: 0,
+        media: false,
+        reason: 'bot_unavailable',
+        results: []
+      };
     }
 
     const targetGroups = Array.isArray(options.chatIds)
@@ -189,40 +216,97 @@ class TelegramClient {
       : this.resolveGroupIds();
 
     if (!targetGroups.length) {
-      return;
+      return {
+        ok: false,
+        attempted: 0,
+        delivered: 0,
+        failed: 0,
+        fallbackUsed: 0,
+        media: false,
+        reason: 'no_target_groups',
+        results: []
+      };
     }
 
     const mediaUrl = this.normalizeMediaUrl(options.mediaUrl);
     const messageText = String(message || '').trim();
+    const results = [];
+    let delivered = 0;
+    let failed = 0;
+    let fallbackUsed = 0;
 
     for (const groupId of targetGroups) {
+      let sent = false;
+      let usedFallback = false;
+      let failureReason = '';
+
       try {
         if (mediaUrl) {
           if (messageText.length <= 1024) {
-            await this.sendPhoto(groupId, mediaUrl, messageText);
+            const mediaResult = await this.sendPhoto(groupId, mediaUrl, messageText);
+            sent = Boolean(mediaResult?.sent);
           } else {
-            await this.sendPhoto(groupId, mediaUrl, '📣 Atualizacao');
-            await this.sendMessage(groupId, messageText);
+            const mediaResult = await this.sendPhoto(groupId, mediaUrl, 'Atualizacao');
+            const textResult = await this.sendMessage(groupId, messageText);
+            sent = Boolean(mediaResult?.sent) && Boolean(textResult?.sent);
           }
         } else {
-          await this.sendMessage(groupId, messageText);
+          const textResult = await this.sendMessage(groupId, messageText);
+          sent = Boolean(textResult?.sent);
         }
       } catch (error) {
+        failureReason = String(error?.message || 'send failed');
         if (mediaUrl) {
           try {
-            await this.sendMessage(groupId, messageText);
-            this.logger.warn(
-              { groupId, err: error.message },
-              'failed to send media alert; fallback to text message sent'
-            );
-            continue;
-          } catch (_fallbackError) {
-            // falls through to error log below
+            const fallbackResult = await this.sendMessage(groupId, messageText);
+            if (fallbackResult?.sent) {
+              sent = true;
+              usedFallback = true;
+              fallbackUsed += 1;
+              this.logger.warn(
+                { groupId, err: error.message },
+                'failed to send media alert; fallback to text message sent'
+              );
+            }
+          } catch (fallbackError) {
+            failureReason = `${error.message}; fallback: ${fallbackError.message}`;
           }
         }
-        this.logger.error({ groupId, err: error.message }, 'failed to send alert to group');
+        if (!sent) {
+          this.logger.error({ groupId, err: error.message }, 'failed to send alert to group');
+        }
       }
+
+      if (sent) {
+        delivered += 1;
+      } else {
+        failed += 1;
+      }
+
+      results.push({
+        groupId,
+        sent,
+        fallback: usedFallback,
+        error: sent ? '' : failureReason || 'not delivered'
+      });
     }
+
+    const summary = {
+      ok: delivered > 0,
+      attempted: targetGroups.length,
+      delivered,
+      failed,
+      fallbackUsed,
+      media: Boolean(mediaUrl),
+      reason: delivered > 0 ? '' : results[0]?.error || 'not delivered',
+      results
+    };
+
+    if (options.throwOnFailure && delivered === 0) {
+      throw new Error(summary.reason || 'telegram delivery failed');
+    }
+
+    return summary;
   }
 
   async sendWithRetry(groupId, operation, operationName = 'send') {
@@ -261,7 +345,7 @@ class TelegramClient {
       return this.me;
     }
 
-    this.me = await this.bot.getMe();
+    this.me = await this.bot.telegram.getMe();
     return this.me;
   }
 
@@ -269,42 +353,42 @@ class TelegramClient {
     if (!this.bot) {
       return null;
     }
-    return this.bot.getChat(chatIdOrUsername);
+    return this.bot.telegram.getChat(chatIdOrUsername);
   }
 
   async getChatMember(chatId, userId) {
     if (!this.bot) {
       return null;
     }
-    return this.bot.getChatMember(chatId, userId);
+    return this.bot.telegram.getChatMember(chatId, userId);
   }
 
   async getChatAdministrators(chatId) {
     if (!this.bot) {
       return [];
     }
-    return this.bot.getChatAdministrators(chatId);
+    return this.bot.telegram.getChatAdministrators(chatId);
   }
 
   async deleteMessage(chatId, messageId) {
     if (!this.bot) {
       return false;
     }
-    return this.bot.deleteMessage(chatId, messageId);
+    return this.bot.telegram.deleteMessage(chatId, messageId);
   }
 
   async banUser(chatId, userId, options = {}) {
     if (!this.bot) {
       return false;
     }
-    return this.bot.banChatMember(chatId, userId, options);
+    return this.bot.telegram.banChatMember(chatId, userId, options);
   }
 
   async unbanUser(chatId, userId, options = {}) {
     if (!this.bot) {
       return false;
     }
-    return this.bot.unbanChatMember(chatId, userId, options);
+    return this.bot.telegram.unbanChatMember(chatId, userId, options);
   }
 
   async kickUser(chatId, userId) {
@@ -312,10 +396,10 @@ class TelegramClient {
       return false;
     }
 
-    await this.bot.banChatMember(chatId, userId, {
+    await this.bot.telegram.banChatMember(chatId, userId, {
       revoke_messages: false
     });
-    await this.bot.unbanChatMember(chatId, userId, {
+    await this.bot.telegram.unbanChatMember(chatId, userId, {
       only_if_banned: true
     });
     return true;
@@ -329,7 +413,7 @@ class TelegramClient {
     const safeMinutes = Math.max(1, Math.min(Number(minutes) || 10, 10080));
     const untilDate = Math.floor(Date.now() / 1000) + safeMinutes * 60;
 
-    return this.bot.restrictChatMember(chatId, userId, {
+    return this.bot.telegram.restrictChatMember(chatId, userId, {
       permissions: {
         can_send_messages: false,
         can_send_audios: false,
@@ -355,7 +439,7 @@ class TelegramClient {
       return false;
     }
 
-    return this.bot.restrictChatMember(chatId, userId, {
+    return this.bot.telegram.restrictChatMember(chatId, userId, {
       permissions: {
         can_send_messages: true,
         can_send_audios: true,
@@ -375,12 +459,12 @@ class TelegramClient {
     });
   }
 
-  async sendDice(chatId, emoji = '🎲') {
+  async sendDice(chatId, emoji = '\u{1F3B2}') {
     if (!this.bot) {
       return null;
     }
 
-    return this.bot.sendDice(chatId, { emoji });
+    return this.bot.telegram.sendDice(chatId, { emoji });
   }
 
   async setMyCommands(commands) {
@@ -388,7 +472,7 @@ class TelegramClient {
       return false;
     }
 
-    return this.bot.setMyCommands(commands);
+    return this.bot.telegram.setMyCommands(commands);
   }
 
   async close() {
@@ -398,19 +482,11 @@ class TelegramClient {
 
     if (this.enablePolling && this.pollingStarted) {
       try {
-        await this.bot.stopPolling();
+        this.bot.stop('manual-stop');
       } catch (error) {
         this.logger.warn({ err: error.message }, 'telegram stop polling failed');
       }
       this.pollingStarted = false;
-    }
-
-    if (typeof this.bot.close === 'function') {
-      try {
-        await this.bot.close();
-      } catch (error) {
-        this.logger.warn({ err: error.message }, 'telegram close failed');
-      }
     }
   }
 }

@@ -79,13 +79,21 @@ class SchedulerService {
   }
 
   computeNextDailyIso(sendAtIso) {
-    const current = new Date(sendAtIso);
-    if (Number.isNaN(current.getTime())) {
+    const base = new Date(sendAtIso);
+    if (Number.isNaN(base.getTime())) {
       return new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
     }
 
-    const next = new Date(current.getTime() + 24 * 60 * 60 * 1000);
-    return next.toISOString();
+    const dayMs = 24 * 60 * 60 * 1000;
+    let nextMs = base.getTime();
+    const nowMs = Date.now();
+
+    if (nextMs <= nowMs) {
+      const jumps = Math.floor((nowMs - nextMs) / dayMs) + 1;
+      nextMs += jumps * dayMs;
+    }
+
+    return new Date(nextMs).toISOString();
   }
 
   async processSchedule(schedule) {
@@ -100,10 +108,14 @@ class SchedulerService {
       const message = this.buildScheduleMessage(schedule);
       const mediaUrl = this.resolveScheduleMediaUrl(schedule);
 
-      await this.telegramClient.sendAlert(message, {
+      const delivery = await this.telegramClient.sendAlert(message, {
         chatIds: targetGroups.length ? targetGroups : undefined,
         mediaUrl: mediaUrl || undefined
       });
+      const delivered = Math.max(0, Number(delivery?.delivered) || 0);
+      if (!delivered) {
+        throw new Error(String(delivery?.reason || 'telegram delivery returned zero recipients'));
+      }
 
       if (schedule.recurrence === 'daily') {
         const nextIso = this.computeNextDailyIso(schedule.send_at);

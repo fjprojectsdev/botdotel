@@ -947,6 +947,14 @@ class TokenModel {
       LIMIT ?
     `);
 
+    this.statements.selectGroupMemberCounts = this.db.prepare(`
+      SELECT
+        chat_id,
+        COUNT(DISTINCT user_id) AS member_count
+      FROM member_activity
+      GROUP BY chat_id
+    `);
+
     this.statements.upsertGroup = this.db.prepare(`
       INSERT INTO groups (chat_id, label, permissions, enabled, updated_at)
       VALUES (@chat_id, @label, @permissions, @enabled, @updated_at)
@@ -1819,6 +1827,21 @@ class TokenModel {
       return this.statements.selectAllGroups.all().map((row) => this.normalizeGroupRow(row));
     }
     return this.statements.selectGroupsEnabled.all().map((row) => this.normalizeGroupRow(row));
+  }
+
+  getGroupMemberCounts() {
+    const rows = this.statements.selectGroupMemberCounts.all();
+    const counts = {};
+
+    for (const row of rows) {
+      const chatId = String(row?.chat_id || '').trim();
+      if (!chatId) {
+        continue;
+      }
+      counts[chatId] = Math.max(0, Number(row?.member_count) || 0);
+    }
+
+    return counts;
   }
 
   setGroupEnabled(id, enabled) {
