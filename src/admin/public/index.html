@@ -4,6 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>iMAVY DASHBOARD | Painel Administrativo</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap"
+    />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -50,18 +56,18 @@
         </div>
 
         <nav class="side-nav">
-          <button class="side-link active" type="button" data-nav-view="overview">Relatorios</button>
-          <button class="side-link" type="button" data-nav-view="groups">Grupos</button>
-          <button class="side-link" type="button" data-nav-view="members">Membros</button>
-          <button class="side-link" type="button" data-nav-view="commands">Comandos</button>
-          <button class="side-link" type="button" data-nav-view="schedules">Agendamentos</button>
-          <button class="side-link" type="button" data-nav-view="automation">Automacoes & Moderacao</button>
-          <button class="side-link" type="button" data-nav-view="moderation">Moderacao</button>
-          <button class="side-link" type="button" data-nav-view="incidents">Incidentes</button>
-          <button class="side-link" type="button" data-nav-view="broadcast">Broadcast</button>
-          <button class="side-link" type="button" data-nav-view="tokens">Tokens</button>
-          <button class="side-link" type="button" data-nav-view="activity">Atividade</button>
-          <button class="side-link" type="button" data-nav-view="settings">Configuracoes</button>
+          <button class="side-link active" type="button" data-nav-view="overview" data-tooltip="Resumo com os principais indicadores.">Relatorios</button>
+          <button class="side-link" type="button" data-nav-view="groups" data-tooltip="Gestao de grupos e permissoes.">Grupos</button>
+          <button class="side-link" type="button" data-nav-view="members" data-tooltip="Ranking de membros ativos por periodo.">Membros</button>
+          <button class="side-link" type="button" data-nav-view="commands" data-tooltip="Ative e organize comandos do bot.">Comandos</button>
+          <button class="side-link" type="button" data-nav-view="schedules" data-tooltip="Mensagens agendadas e recorrentes.">Agendamentos</button>
+          <button class="side-link" type="button" data-nav-view="automation" data-tooltip="Regras de automacao e moderacao por grupo.">Automacoes & Moderacao</button>
+          <button class="side-link" type="button" data-nav-view="moderation" data-tooltip="Logs e indicadores de moderacao.">Moderacao</button>
+          <button class="side-link" type="button" data-nav-view="incidents" data-tooltip="Acompanhamento de incidentes operacionais.">Incidentes</button>
+          <button class="side-link" type="button" data-nav-view="broadcast" data-tooltip="Disparo de comunicados em massa.">Broadcast</button>
+          <button class="side-link" type="button" data-nav-view="tokens" data-tooltip="Cadastro e status dos tokens monitorados.">Tokens</button>
+          <button class="side-link" type="button" data-nav-view="activity" data-tooltip="Historico de compras recentes.">Atividade</button>
+          <button class="side-link" type="button" data-nav-view="settings" data-tooltip="Ajustes globais do bot e alertas.">Configuracoes</button>
         </nav>
 
         <div class="sidebar-footer">
@@ -100,7 +106,7 @@
           <div class="header-side">
             <div class="header-filters">
               <label class="header-filter-label" for="periodSelect">Periodo</label>
-              <select id="periodSelect" class="period-select" aria-label="Periodo">
+              <select id="periodSelect" class="period-select" aria-label="Periodo" data-tooltip="Define a janela usada nos graficos e rankings.">
                 <option value="1">Ultimas 24h</option>
                 <option value="7">Ultimos 7 dias</option>
                 <option value="30" selected>Ultimos 30 dias</option>
@@ -109,10 +115,10 @@
             </div>
 
             <div class="header-actions">
-              <button id="reloadBtn" class="btn btn-primary" type="button">Atualizar</button>
+              <button id="reloadBtn" class="btn btn-primary" type="button" data-tooltip="Recarrega todos os dados da API.">Atualizar</button>
 
               <div class="actions-menu-wrap">
-                <button id="actionsMenuBtn" class="btn btn-ghost" type="button" aria-expanded="false">Acoes</button>
+                <button id="actionsMenuBtn" class="btn btn-ghost" type="button" aria-expanded="false" data-tooltip="Acoes rapidas: teste, exportacao e tema.">Acoes</button>
                 <div id="actionsMenu" class="actions-menu" hidden>
                   <button id="testAlertBtn" class="actions-menu-item" type="button">Enviar Teste</button>
                   <button id="exportBtn" class="actions-menu-item" type="button">Exportar PDF</button>

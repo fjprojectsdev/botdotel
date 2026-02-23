@@ -292,6 +292,7 @@ let refreshCycleBusy = false;
 let menuDraftButtons = [];
 let tourIndex = -1;
 let pendingTokenImageUploadId = 0;
+let lastRenderedView = '';
 
 const TOUR_STEPS = [
   {
@@ -663,10 +664,13 @@ const showToast = (message, isError = false) => {
   }
 
   refs.toast.textContent = String(message || '');
-  refs.toast.style.borderColor = isError ? 'rgba(255,110,141,.7)' : 'rgba(45,223,132,.45)';
+  refs.toast.dataset.kind = isError ? 'error' : 'success';
   refs.toast.classList.add('show');
   clearTimeout(showToast._timer);
-  showToast._timer = setTimeout(() => refs.toast.classList.remove('show'), 2600);
+  showToast._timer = setTimeout(() => {
+    refs.toast.classList.remove('show');
+    delete refs.toast.dataset.kind;
+  }, 2600);
 };
 
 const apiFetch = async (url, options = {}) => {
@@ -717,6 +721,7 @@ const withButtonLock = async (button, callback) => {
 
   if (button) {
     button.dataset.busy = '1';
+    button.classList.add('is-busy');
     button.disabled = true;
   }
 
@@ -726,12 +731,95 @@ const withButtonLock = async (button, callback) => {
     if (button) {
       button.disabled = false;
       button.dataset.busy = '0';
+      button.classList.remove('is-busy');
     }
   }
 };
 
 const getSubmitButton = (event) =>
   event.submitter || event.target?.querySelector?.('button[type="submit"]') || null;
+
+const renderEmptyState = ({ title = 'Sem dados', description = 'Tente novamente mais tarde.' } = {}) =>
+  `<div class="empty-state">
+    <p class="empty-state-title">${escapeHtml(title)}</p>
+    <p class="empty-state-text">${escapeHtml(description)}</p>
+  </div>`;
+
+const renderEmptyStateRow = ({ title, description, colSpan = 1 } = {}) =>
+  `<tr><td colspan="${Math.max(1, Number(colSpan) || 1)}">${renderEmptyState({ title, description })}</td></tr>`;
+
+const statusBadgeVariant = (value) => {
+  const status = String(value || '')
+    .trim()
+    .toLowerCase();
+
+  if (['ativo', 'active', 'ok', 'resolved', 'sent', 'enabled', 'success'].includes(status)) {
+    return 'badge-status-success';
+  }
+  if (['pendente', 'pending', 'ack', 'in_progress', 'received'].includes(status)) {
+    return 'badge-status-pending';
+  }
+  if (['falhou', 'failed', 'erro', 'error', 'disabled', 'off', 'paused', 'inativo'].includes(status)) {
+    return 'badge-status-danger';
+  }
+  if (['ignored', 'warn', 'warning', 'media'].includes(status)) {
+    return 'badge-status-warning';
+  }
+  return 'badge-status-neutral';
+};
+
+const renderStatusBadge = (label, statusValue = label) =>
+  `<span class="badge ${statusBadgeVariant(statusValue)}">${escapeHtml(label || '-')}</span>`;
+
+const skeletonBlock = (height = '14px', width = '100%') =>
+  `<span class="skeleton-line" style="height:${escapeHtml(height)};width:${escapeHtml(width)};"></span>`;
+
+const renderLoadingState = () => {
+  refs.statusLine.textContent = 'Carregando dados do painel...';
+
+  if (refs.tokenCloud) {
+    refs.tokenCloud.innerHTML = `<div class="skeleton-stack">${skeletonBlock('30px', '34%')}${skeletonBlock(
+      '30px',
+      '26%'
+    )}${skeletonBlock('30px', '30%')}</div>`;
+  }
+  if (refs.networkBreakdown) {
+    refs.networkBreakdown.innerHTML = `<div class="skeleton-stack">${skeletonBlock('12px', '100%')}${skeletonBlock(
+      '12px',
+      '90%'
+    )}${skeletonBlock('12px', '74%')}</div>`;
+  }
+  if (refs.whaleList) {
+    refs.whaleList.innerHTML = `<div class="skeleton-stack">${skeletonBlock('68px', '100%')}${skeletonBlock(
+      '68px',
+      '100%'
+    )}</div>`;
+  }
+  if (refs.groupCards) {
+    refs.groupCards.innerHTML = `<div class="skeleton-grid">${skeletonBlock('180px', '100%')}${skeletonBlock(
+      '180px',
+      '100%'
+    )}${skeletonBlock('180px', '100%')}</div>`;
+  }
+  if (refs.membersTbody) {
+    refs.membersTbody.innerHTML = '<tr class="skeleton-row"><td colspan="6"></td></tr>';
+  }
+  if (refs.schedulesTbody) {
+    refs.schedulesTbody.innerHTML = '<tr class="skeleton-row"><td colspan="6"></td></tr>';
+  }
+  if (refs.incidentsTbody) {
+    refs.incidentsTbody.innerHTML = '<tr class="skeleton-row"><td colspan="7"></td></tr>';
+  }
+  if (refs.broadcastsTbody) {
+    refs.broadcastsTbody.innerHTML = '<tr class="skeleton-row"><td colspan="5"></td></tr>';
+  }
+  if (refs.tokensTbody) {
+    refs.tokensTbody.innerHTML = '<tr class="skeleton-row"><td colspan="6"></td></tr>';
+  }
+  if (refs.txTbody) {
+    refs.txTbody.innerHTML = '<tr class="skeleton-row"><td colspan="7"></td></tr>';
+  }
+};
 
 const shortText = (value, left = 6, right = 4) => {
   const raw = String(value || '');
@@ -1077,6 +1165,8 @@ const setCommandCategories = (categories) => {
 };
 
 const renderView = () => {
+  const viewChanged = lastRenderedView !== state.currentView;
+
   refs.navButtons.forEach((button) => {
     const active = button.dataset.navView === state.currentView;
     button.classList.toggle('active', active);
@@ -1085,9 +1175,19 @@ const renderView = () => {
   refs.viewSections.forEach((section) => {
     const active = section.dataset.view === state.currentView;
     section.classList.toggle('active', active);
+
+    if (active && viewChanged) {
+      section.classList.remove('is-entering');
+      window.requestAnimationFrame(() => {
+        section.classList.add('is-entering');
+      });
+    } else {
+      section.classList.remove('is-entering');
+    }
   });
 
   refs.viewTitle.textContent = viewTitles[state.currentView] || 'Painel';
+  lastRenderedView = state.currentView;
 };
 
 const renderNetworkSelect = () => {
@@ -1148,7 +1248,10 @@ const renderStats = () => {
 const renderTokenCloud = () => {
   const txs = state.filteredTransactions;
   if (!txs.length) {
-    refs.tokenCloud.innerHTML = '<p class="placeholder">Sem compras no periodo selecionado.</p>';
+    refs.tokenCloud.innerHTML = renderEmptyState({
+      title: 'Sem compras no periodo',
+      description: 'Quando novas transacoes chegarem, os tokens mais citados aparecerao aqui.'
+    });
     return;
   }
 
@@ -1178,7 +1281,10 @@ const renderNetworkBreakdown = () => {
 
   const enabledNetworks = state.networks.filter((item) => item.enabled);
   if (!enabledNetworks.length) {
-    refs.networkBreakdown.innerHTML = '<p class="placeholder">Sem redes habilitadas.</p>';
+    refs.networkBreakdown.innerHTML = renderEmptyState({
+      title: 'Sem redes habilitadas',
+      description: 'Ative pelo menos uma rede em runtime para acompanhar a distribuicao.'
+    });
     return;
   }
 
@@ -1208,7 +1314,10 @@ const renderWhales = () => {
   const selected = whales.length ? whales : txs.slice(0, 6);
 
   if (!selected.length) {
-    refs.whaleList.innerHTML = '<p class="placeholder">Sem transacoes para exibir.</p>';
+    refs.whaleList.innerHTML = renderEmptyState({
+      title: 'Sem transacoes relevantes',
+      description: 'Nenhuma compra encontrada para o periodo atual.'
+    });
     return;
   }
 
@@ -1271,7 +1380,10 @@ const renderGroups = () => {
     : state.groups;
 
   if (!groups.length) {
-    refs.groupCards.innerHTML = '<p class="placeholder">Nenhum grupo encontrado.</p>';
+    refs.groupCards.innerHTML = renderEmptyState({
+      title: 'Nenhum grupo encontrado',
+      description: query ? 'Revise o termo de busca.' : 'Adicione o bot em um grupo para iniciar a gestao.'
+    });
     return;
   }
 
@@ -1347,22 +1459,24 @@ const renderMembers = () => {
     : state.members;
 
   if (!members.length) {
-    refs.membersTbody.innerHTML = '<tr><td colspan="6" class="placeholder">Sem membros no periodo.</td></tr>';
+    refs.membersTbody.innerHTML = renderEmptyStateRow({
+      title: 'Sem membros no periodo',
+      description: query ? 'Nenhum membro corresponde ao filtro informado.' : 'A atividade de membros aparecera aqui.',
+      colSpan: 6
+    });
     return;
   }
 
   refs.membersTbody.innerHTML = members
     .map((member) => {
       const active = String(member.status || '').toLowerCase() === 'ativo';
-      const badgeClass = active ? 'badge badge-ok' : 'badge badge-off';
-
       return `<tr>
         <td>${escapeHtml(member.name || shortText(member.wallet, 6, 4))}</td>
         <td>${escapeHtml(member.group || '-')}</td>
         <td>${escapeHtml(formatNumber(member.messages || 0, 0))}</td>
         <td>${escapeHtml(formatNumber(member.reactions || 0, 0))}</td>
         <td>${escapeHtml(formatUsd(member.volume_usd || 0))}</td>
-        <td><span class="${badgeClass}">${active ? 'Ativo' : 'Inativo'}</span></td>
+        <td>${renderStatusBadge(active ? 'Ativo' : 'Inativo')}</td>
       </tr>`;
     })
     .join('');
@@ -1460,12 +1574,18 @@ const renderCommands = () => {
 
   refs.commandsAccordion.innerHTML = blocks.length
     ? blocks.join('')
-    : '<p class="placeholder">Nenhum comando encontrado.</p>';
+    : renderEmptyState({
+        title: 'Nenhum comando encontrado',
+        description: query ? 'Nenhum comando combina com o filtro atual.' : 'Carregue as categorias para editar comandos.'
+      });
 };
 
 const renderScheduleGroupChecklist = (selectedGroups = []) => {
   if (!state.groups.length) {
-    refs.scheduleGroupChecklist.innerHTML = '<p class="placeholder">Cadastre um grupo antes de agendar.</p>';
+    refs.scheduleGroupChecklist.innerHTML = renderEmptyState({
+      title: 'Sem grupos para agendamento',
+      description: 'Cadastre um grupo antes de criar mensagens recorrentes.'
+    });
     return;
   }
 
@@ -1507,7 +1627,11 @@ const renderSchedules = () => {
     : state.schedules;
 
   if (!schedules.length) {
-    refs.schedulesTbody.innerHTML = '<tr><td colspan="6" class="placeholder">Nenhum agendamento cadastrado.</td></tr>';
+    refs.schedulesTbody.innerHTML = renderEmptyStateRow({
+      title: 'Nenhum agendamento cadastrado',
+      description: 'Use "Nova Mensagem" para configurar o primeiro envio automatico.',
+      colSpan: 6
+    });
     return;
   }
 
@@ -1524,8 +1648,6 @@ const renderSchedules = () => {
         failed: 'Falhou'
       };
       const statusText = statusMap[status] || status;
-      const badgeClass = status === 'disabled' || status === 'failed' ? 'badge badge-off' : 'badge badge-ok';
-
       let toggleText = 'Ativar';
       let toggleStatus = 'pending';
       if (status === 'pending') {
@@ -1554,7 +1676,7 @@ const renderSchedules = () => {
         <td>${schedule.kind === 'poll' ? 'Enquete' : 'Mensagem'}</td>
         <td>${escapeHtml(new Date(schedule.send_at).toLocaleString('pt-BR'))}</td>
         <td>${schedule.recurrence === 'daily' ? 'Diario' : 'Unico'}</td>
-        <td><span class="${badgeClass}">${statusText}</span></td>
+        <td>${renderStatusBadge(statusText, status)}</td>
         <td>
           <div class="actions">
             <button class="btn btn-small btn-soft" data-action="schedule-run" data-id="${schedule.id}" type="button">Run</button>
@@ -1596,11 +1718,18 @@ const renderAutomation = () => {
 
   const activeGroup = ensureAutomationGroupSelection();
   if (!activeGroup) {
-    refs.automationModulesList.innerHTML = '<p class="placeholder">Ative um grupo para configurar automacoes.</p>';
-    refs.strikeTriggersList.innerHTML = '<p class="placeholder">Ative um grupo para configurar gatilhos.</p>';
-    refs.strikeLadderList.innerHTML = '<p class="placeholder">Ative um grupo para configurar escada.</p>';
-    refs.whitelistList.innerHTML = '<p class="placeholder">Ative um grupo para configurar whitelist.</p>';
-    refs.moderationLogsList.innerHTML = '<p class="placeholder">Sem logs.</p>';
+    const emptyAutomation = renderEmptyState({
+      title: 'Selecione um grupo ativo',
+      description: 'Automacoes e moderacao sao configuradas por grupo.'
+    });
+    refs.automationModulesList.innerHTML = emptyAutomation;
+    refs.strikeTriggersList.innerHTML = emptyAutomation;
+    refs.strikeLadderList.innerHTML = emptyAutomation;
+    refs.whitelistList.innerHTML = emptyAutomation;
+    refs.moderationLogsList.innerHTML = renderEmptyState({
+      title: 'Sem logs',
+      description: 'Novos eventos de moderacao aparecerao aqui.'
+    });
     return;
   }
 
@@ -1633,7 +1762,10 @@ const renderAutomation = () => {
         </article>`;
         })
         .join('')
-    : '<p class="placeholder">Nenhum modulo disponivel.</p>';
+    : renderEmptyState({
+        title: 'Nenhum modulo disponivel',
+        description: 'Nao ha modulos cadastrados para este grupo.'
+      });
 
   refs.strikeTriggersList.innerHTML = triggers.length
     ? triggers
@@ -1661,7 +1793,10 @@ const renderAutomation = () => {
         </article>`;
         })
         .join('')
-    : '<p class="placeholder">Nenhum gatilho disponivel.</p>';
+    : renderEmptyState({
+        title: 'Nenhum gatilho disponivel',
+        description: 'Configure gatilhos para iniciar o sistema de strikes.'
+      });
 
   refs.strikeLadderList.innerHTML = ladder.length
     ? ladder
@@ -1675,7 +1810,7 @@ const renderAutomation = () => {
             <div class="panel-hint">${escapeHtml(shortText(item.message_template || '-', 96, 0))}</div>
           </div>
           <div class="stack-actions">
-            <span class="badge ${item.enabled ? 'badge-ok' : 'badge-off'}">${item.enabled ? 'Ativo' : 'Off'}</span>
+            ${renderStatusBadge(item.enabled ? 'Ativo' : 'Off')}
             <button class="btn btn-small btn-soft" data-action="strike-ladder-config" data-step="${
               item.step
             }" type="button">Configurar</button>
@@ -1683,7 +1818,10 @@ const renderAutomation = () => {
         </article>`;
         })
         .join('')
-    : '<p class="placeholder">Escada nao configurada.</p>';
+    : renderEmptyState({
+        title: 'Escada nao configurada',
+        description: 'Defina os passos de punicao para cada nivel de strike.'
+      });
 
   refs.whitelistList.innerHTML = whitelist.length
     ? whitelist
@@ -1701,7 +1839,10 @@ const renderAutomation = () => {
         </article>`;
         })
         .join('')
-    : '<p class="placeholder">Nenhum usuario na whitelist.</p>';
+    : renderEmptyState({
+        title: 'Whitelist vazia',
+        description: 'Adicione usuarios permitidos para regras especificas.'
+      });
 
   refs.moderationLogsList.innerHTML = logs.length
     ? logs
@@ -1717,12 +1858,15 @@ const renderAutomation = () => {
             )}</div>
           </div>
           <div class="stack-actions">
-            <span class="badge badge-soft">${escapeHtml(item.status || '-')}</span>
+            ${renderStatusBadge(item.status || '-')}
           </div>
         </article>`;
         })
         .join('')
-    : '<p class="placeholder">Nenhum log de moderacao para o periodo.</p>';
+    : renderEmptyState({
+        title: 'Sem logs de moderacao',
+        description: 'Nenhum evento registrado no periodo selecionado.'
+      });
 
   const panes = Array.from(document.querySelectorAll('[data-automation-pane]'));
   const tabs = Array.from(document.querySelectorAll('[data-automation-tab]'));
@@ -1756,8 +1900,11 @@ const renderModeration = () => {
   }
 
   if (!logs.length) {
-    refs.moderationTableBody.innerHTML =
-      '<tr><td colspan="5" class="placeholder">Nenhuma denuncia pendente.</td></tr>';
+    refs.moderationTableBody.innerHTML = renderEmptyStateRow({
+      title: 'Sem denuncias pendentes',
+      description: 'Tudo sob controle no momento.',
+      colSpan: 5
+    });
     return;
   }
 
@@ -1768,7 +1915,7 @@ const renderModeration = () => {
         <td>${escapeHtml(when)}</td>
         <td>${escapeHtml(item.event_type || '-')}</td>
         <td>${escapeHtml(item.user_id ? shortText(item.user_id, 6, 4) : '-')}</td>
-        <td><span class="badge badge-soft">${escapeHtml(item.status || '-')}</span></td>
+        <td>${renderStatusBadge(item.status || '-')}</td>
         <td>${escapeHtml(shortText(item.reason || '-', 56, 0))}</td>
       </tr>`;
     })
@@ -1791,7 +1938,11 @@ const renderIncidents = () => {
   const rows = filterStatus ? source.filter((item) => String(item.status || '').toLowerCase() === filterStatus) : source;
 
   if (!rows.length) {
-    refs.incidentsTbody.innerHTML = '<tr><td colspan="7" class="placeholder">Nenhum incidente encontrado.</td></tr>';
+    refs.incidentsTbody.innerHTML = renderEmptyStateRow({
+      title: 'Nenhum incidente encontrado',
+      description: filterStatus ? 'Nenhum incidente para o status selecionado.' : 'Sem incidentes operacionais no periodo.',
+      colSpan: 7
+    });
     return;
   }
 
@@ -1809,7 +1960,7 @@ const renderIncidents = () => {
         <td>${escapeHtml(item.incident_type || '-')}</td>
         <td>${escapeHtml(shortText(item.title || '-', 64, 0))}</td>
         <td><span class="badge badge-severity badge-severity-${escapeHtml(severity)}">${escapeHtml(severityLabel)}</span></td>
-        <td><span class="badge badge-soft">${escapeHtml(statusLabel)}</span></td>
+        <td>${renderStatusBadge(statusLabel, status)}</td>
         <td>${escapeHtml(chatId ? getGroupLabelById(chatId) : '-')}</td>
         <td>
           <div class="actions">
@@ -1842,7 +1993,10 @@ const renderBroadcastGroupChecklist = () => {
 
   const activeGroups = state.groups.filter((group) => isEnabled(group.enabled));
   if (!activeGroups.length) {
-    refs.broadcastGroupChecklist.innerHTML = '<p class="placeholder">Nenhum grupo ativo para broadcast.</p>';
+    refs.broadcastGroupChecklist.innerHTML = renderEmptyState({
+      title: 'Sem grupos ativos',
+      description: 'Ative ao menos um grupo para liberar envios de broadcast.'
+    });
     return;
   }
 
@@ -1863,7 +2017,11 @@ const renderBroadcasts = () => {
 
   const rows = Array.isArray(state.broadcasts) ? state.broadcasts : [];
   if (!rows.length) {
-    refs.broadcastsTbody.innerHTML = '<tr><td colspan="5" class="placeholder">Nenhum broadcast enviado.</td></tr>';
+    refs.broadcastsTbody.innerHTML = renderEmptyStateRow({
+      title: 'Nenhum broadcast enviado',
+      description: 'Os disparos em massa aparecerao aqui com status e metricas.',
+      colSpan: 5
+    });
     return;
   }
 
@@ -1871,7 +2029,7 @@ const renderBroadcasts = () => {
     .map((item) => {
       return `<tr>
         <td>${escapeHtml(item.title || shortText(item.content || '-', 48, 0))}</td>
-        <td><span class="badge badge-soft">${escapeHtml(item.status || '-')}</span></td>
+        <td>${renderStatusBadge(item.status || '-')}</td>
         <td>${escapeHtml(formatNumber(item.sent_count || 0, 0))}</td>
         <td>${escapeHtml(formatNumber(item.fail_count || 0, 0))}</td>
         <td>${escapeHtml(item.created_at ? new Date(item.created_at).toLocaleString('pt-BR') : '-')}</td>
@@ -1882,7 +2040,11 @@ const renderBroadcasts = () => {
 
 const renderTokens = () => {
   if (!state.tokens.length) {
-    refs.tokensTbody.innerHTML = '<tr><td colspan="6" class="placeholder">Nenhum token cadastrado.</td></tr>';
+    refs.tokensTbody.innerHTML = renderEmptyStateRow({
+      title: 'Nenhum token cadastrado',
+      description: 'Cadastre o primeiro token para iniciar o monitoramento.',
+      colSpan: 6
+    });
     return;
   }
 
@@ -1896,7 +2058,7 @@ const renderTokens = () => {
           <div class="panel-hint">${escapeHtml(shortText(token.address, 10, 6))}</div>
         </td>
         <td>${escapeHtml(getNetworkLabel(token.network))}</td>
-        <td><span class="badge ${enabled ? 'badge-ok' : 'badge-off'}">${enabled ? 'Ativo' : 'Pausado'}</span></td>
+        <td>${renderStatusBadge(enabled ? 'Ativo' : 'Pausado')}</td>
         <td>${escapeHtml(shortText(token.pair_address, 10, 6))}</td>
         <td>
           ${
@@ -1929,7 +2091,11 @@ const renderTokens = () => {
 const renderTransactions = () => {
   const txs = state.filteredTransactions;
   if (!txs.length) {
-    refs.txTbody.innerHTML = '<tr><td colspan="7" class="placeholder">Sem compras no periodo.</td></tr>';
+    refs.txTbody.innerHTML = renderEmptyStateRow({
+      title: 'Sem compras no periodo',
+      description: 'A tabela sera preenchida automaticamente com novas transacoes.',
+      colSpan: 7
+    });
     return;
   }
 
@@ -2096,7 +2262,7 @@ const loadData = async ({ silent = false, suppressErrors = false } = {}) => {
   loadInFlight = (async () => {
     try {
       if (!silent) {
-        refs.statusLine.textContent = 'Atualizando dados...';
+        renderLoadingState();
       }
 
       const days = state.periodDays;
