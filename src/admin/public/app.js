@@ -1441,8 +1441,13 @@ const renderGroups = () => {
         : lastSuccessAt
           ? `Ultimo envio OK: ${lastSuccessAt}`
           : 'Sem historico de entrega';
-      const permissionsHtml = permissions.length
-        ? permissions.map((permission) => `<span class="permission-chip">${escapeHtml(permission)}</span>`).join('')
+      const visiblePermissions = permissions.slice(0, 5);
+      const hiddenPermissionCount = Math.max(0, permissions.length - visiblePermissions.length);
+      const permissionsHtml = visiblePermissions.length
+        ? visiblePermissions.map((permission) => `<span class="permission-chip">${escapeHtml(permission)}</span>`).join('') +
+          (hiddenPermissionCount > 0
+            ? `<span class="permission-chip permission-chip-more">+${hiddenPermissionCount}</span>`
+            : '')
         : '<span class="permission-chip permission-chip-off">sem_permissoes</span>';
 
       return `<article class="group-card">
@@ -3953,3 +3958,4 @@ init().catch((error) => {
   console.error(error);
   showToast(error.message || 'Falha ao iniciar painel.', true);
 });
+
