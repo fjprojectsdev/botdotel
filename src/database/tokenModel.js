@@ -419,6 +419,13 @@ const DEFAULT_COMMAND_ITEMS = [
     aliases: 'coinflip'
   },
   {
+    category: 'Diversao',
+    name: '/sorteio',
+    command_key: 'fun.raffle',
+    description: 'Sorteia participante ativo do grupo',
+    aliases: 'sorteio,raffle,draw'
+  },
+  {
     category: 'Economia',
     name: '/balance',
     command_key: 'eco.balance',
@@ -1071,6 +1078,24 @@ class TokenModel {
         COUNT(DISTINCT user_id) AS member_count
       FROM member_activity
       GROUP BY chat_id
+    `);
+
+    this.statements.selectChatActiveMembersByCutoff = this.db.prepare(`
+      SELECT
+        chat_id,
+        user_id,
+        username,
+        first_name,
+        last_name,
+        message_count,
+        reactions_count,
+        volume_usd,
+        last_seen
+      FROM member_activity
+      WHERE chat_id = ?
+        AND datetime(last_seen) >= datetime(?)
+      ORDER BY message_count DESC, datetime(last_seen) DESC
+      LIMIT ?
     `);
 
     this.statements.upsertGroup = this.db.prepare(`
@@ -2169,6 +2194,18 @@ class TokenModel {
     const safeLimit = Math.max(1, Math.min(Number(limit) || 200, 1000));
     const cutoff = new Date(Date.now() - safeDays * 24 * 60 * 60 * 1000).toISOString();
     return this.statements.selectTopChatMembersByCutoff.all(cutoff, safeLimit);
+  }
+
+  getChatActiveMembers(chatId, { days = 30, limit = 200 } = {}) {
+    const safeChatId = String(chatId || '').trim();
+    if (!safeChatId) {
+      return [];
+    }
+
+    const safeDays = Math.max(1, Math.min(Number(days) || 30, 365));
+    const safeLimit = Math.max(1, Math.min(Number(limit) || 200, 1000));
+    const cutoff = new Date(Date.now() - safeDays * 24 * 60 * 60 * 1000).toISOString();
+    return this.statements.selectChatActiveMembersByCutoff.all(safeChatId, cutoff, safeLimit);
   }
 
   normalizeGroupPayload(group) {

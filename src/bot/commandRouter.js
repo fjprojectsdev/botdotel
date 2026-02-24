@@ -64,6 +64,7 @@ const COMMANDS = [
   { key: 'fun.ship', cmd: 'ship', feature: FEATURE_PERMISSION.fun },
   { key: 'fun.8ball', cmd: '8ball', feature: FEATURE_PERMISSION.fun },
   { key: 'fun.coinflip', cmd: 'coinflip', feature: FEATURE_PERMISSION.fun },
+  { key: 'fun.raffle', cmd: 'sorteio', aliases: ['raffle', 'draw'], feature: FEATURE_PERMISSION.fun, groupOnly: true },
   { key: 'eco.balance', cmd: 'balance', feature: FEATURE_PERMISSION.eco },
   { key: 'eco.daily', cmd: 'daily', feature: FEATURE_PERMISSION.eco },
   { key: 'eco.work', cmd: 'work', feature: FEATURE_PERMISSION.eco },
@@ -1190,6 +1191,7 @@ class CommandRouter {
       case 'fun.ship':
       case 'fun.8ball':
       case 'fun.coinflip':
+      case 'fun.raffle':
         await this.handleFun(ctx);
         return;
       case 'eco.balance':
@@ -1222,7 +1224,7 @@ class CommandRouter {
       byName.set(String(item.name || '').toLowerCase(), item);
     }
 
-    const basic = ['/start', '/menu', '/alerts', '/tokens', '/settings', '/ping']
+    const basic = ['/start', '/menu', '/alerts', '/tokens', '/settings', '/ping', '/sorteio']
       .map((name) => byName.get(name))
       .filter(Boolean);
     const admin = ['/warns', '/del', '/purge', '/antispam', '/antilink', '/antiflood']
@@ -1636,6 +1638,51 @@ class CommandRouter {
     }
     if (key === 'fun.coinflip') {
       await this.reply(ctx, `?? ${COIN[Math.floor(Math.random() * COIN.length)]}`);
+      return;
+    }
+    if (key === 'fun.raffle') {
+      const winnerCount = Number.isFinite(Number(ctx.args[0])) ? Math.floor(Number(ctx.args[0])) : 1;
+      const days = Number.isFinite(Number(ctx.args[1])) ? Math.floor(Number(ctx.args[1])) : 30;
+
+      if (winnerCount < 1 || winnerCount > 10 || days < 1 || days > 90) {
+        await this.reply(ctx, 'Uso: /sorteio [vencedores 1-10] [dias 1-90]');
+        return;
+      }
+
+      const pool = this.tokenModel.getChatActiveMembers(ctx.chatId, {
+        days,
+        limit: 1000
+      });
+
+      if (!pool.length) {
+        await this.reply(ctx, 'Nao ha participantes elegiveis ainda. Peca para o grupo enviar mensagens e tente novamente.');
+        return;
+      }
+
+      const shuffled = [...pool];
+      for (let i = shuffled.length - 1; i > 0; i -= 1) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+      }
+
+      const amount = Math.min(winnerCount, shuffled.length);
+      const winners = shuffled.slice(0, amount);
+      const labels = winners.map((member, index) => {
+        const username = text(member.username);
+        const fullName = text([member.first_name, member.last_name].filter(Boolean).join(' '));
+        const label = username ? `@${username}` : fullName || `id:${member.user_id}`;
+        return `${index + 1}. ${label}`;
+      });
+
+      await this.reply(
+        ctx,
+        [
+          `Sorteio concluido (${amount} vencedor${amount > 1 ? 'es' : ''})`,
+          `Participantes elegiveis: ${pool.length} (ultimos ${days} dia${days > 1 ? 's' : ''})`,
+          '',
+          ...labels
+        ].join('\n')
+      );
     }
   }
 
