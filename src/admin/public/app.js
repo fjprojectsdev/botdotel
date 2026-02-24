@@ -952,7 +952,10 @@ const readPermissionsFromContainer = (container, inputName) => {
     return [];
   }
 
-  return Array.from(container.querySelectorAll(`input[name="${inputName}"]:checked`))
+  const scoped = Array.from(container.querySelectorAll(`input[name="${inputName}"]:checked`));
+  const fallback = scoped.length ? scoped : Array.from(container.querySelectorAll('input[type="checkbox"]:checked'));
+
+  return fallback
     .map((element) => String(element.value || '').trim().toLowerCase())
     .filter(Boolean);
 };
