@@ -178,6 +178,7 @@ class CommandRouter {
     this.floodCache = new Map();
     this.spamCache = new Map();
     this.automationCache = new Map();
+    this.raffleSessions = new Map();
   }
 
   async start() {
@@ -186,6 +187,7 @@ class CommandRouter {
     }
 
     this.telegramClient.onMessage((message) => this.handleMessage(message));
+    this.telegramClient.onCallbackQuery((query) => this.handleCallbackQuery(query));
     await this.syncSlashCommands(true);
     this.logger.info('telegram command router started');
   }
@@ -195,6 +197,7 @@ class CommandRouter {
     this.floodCache.clear();
     this.spamCache.clear();
     this.automationCache.clear();
+    this.raffleSessions.clear();
   }
 
   isGroup(chat) {
@@ -343,6 +346,219 @@ class CommandRouter {
       antiraid: 'antiraid'
     };
     return map[text(raw).toLowerCase()] || null;
+  }
+
+  createRaffleSessionId() {
+    return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+  }
+
+  getActiveRaffleSession(chatId) {
+    const safeChatId = String(chatId || '');
+    if (!safeChatId) {
+      return null;
+    }
+
+    for (const session of this.raffleSessions.values()) {
+      if (session && session.chatId === safeChatId && !session.finished) {
+        return session;
+      }
+    }
+    return null;
+  }
+
+  buildRaffleMessage(session, { closed = false } = {}) {
+    const participantsCount = session?.participants?.size || 0;
+    const winnerCount = Math.max(1, Number(session?.winnerCount || 1));
+    if (closed) {
+      return [
+        'Sorteio encerrado.',
+        `Participantes: ${participantsCount}`,
+        `Vencedores definidos: ${Math.max(0, Number(session?.winners?.length || 0))}`
+      ].join('\n');
+    }
+
+    return [
+      'Sorteio iniciado.',
+      'Clique no botao "Participar" para entrar.',
+      `Vencedores: ${winnerCount}`,
+      `Participantes: ${participantsCount}`,
+      '',
+      'Quando quiser finalizar, um admin deve clicar em "Sortear agora".'
+    ].join('\n');
+  }
+
+  buildRaffleKeyboard(session, { closed = false } = {}) {
+    const id = String(session?.id || '');
+    if (!id) {
+      return {};
+    }
+
+    if (closed) {
+      return {
+        inline_keyboard: [[{ text: 'Sorteio encerrado', callback_data: `rfd:${id}` }]]
+      };
+    }
+
+    const participantsCount = session?.participants?.size || 0;
+    return {
+      inline_keyboard: [
+        [{ text: `Participar (${participantsCount})`, callback_data: `rfj:${id}` }],
+        [{ text: 'Sortear agora', callback_data: `rfd:${id}` }]
+      ]
+    };
+  }
+
+  normalizeRaffleParticipant(from) {
+    const id = String(from?.id || '').trim();
+    const username = text(from?.username);
+    const fullName = text([from?.first_name, from?.last_name].filter(Boolean).join(' '));
+    const label = username ? `@${username}` : fullName || `id:${id}`;
+    return {
+      id,
+      username,
+      fullName,
+      label
+    };
+  }
+
+  pickRandomParticipants(participants, count) {
+    const list = Array.isArray(participants) ? [...participants] : [];
+    for (let i = list.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [list[i], list[j]] = [list[j], list[i]];
+    }
+    return list.slice(0, Math.max(0, Math.min(count, list.length)));
+  }
+
+  async updateRafflePanel(session, { closed = false } = {}) {
+    if (!session?.chatId || !session?.messageId) {
+      return;
+    }
+
+    const textMessage = this.buildRaffleMessage(session, { closed });
+    const replyMarkup = this.buildRaffleKeyboard(session, { closed });
+
+    try {
+      await this.telegramClient.editMessageText(session.chatId, session.messageId, textMessage, {
+        reply_markup: replyMarkup
+      });
+    } catch (error) {
+      const message = String(error?.message || '').toLowerCase();
+      if (message.includes('message is not modified')) {
+        return;
+      }
+      this.logger.warn({ err: error.message, chatId: session.chatId }, 'failed to update raffle panel');
+    }
+  }
+
+  async finishRaffleSession(session, { actorId = '' } = {}) {
+    if (!session || session.finished) {
+      return session?.winners || [];
+    }
+
+    const participants = Array.from(session.participants.values());
+    const maxWinners = Math.max(1, Number(session.winnerCount || 1));
+    const winners = this.pickRandomParticipants(participants, maxWinners);
+
+    session.finished = true;
+    session.finishedAt = isoNow();
+    session.winners = winners;
+
+    await this.updateRafflePanel(session, { closed: true });
+
+    if (!winners.length) {
+      await this.send(session.chatId, 'Sorteio encerrado sem participantes.');
+      return [];
+    }
+
+    const lines = [
+      `Sorteio finalizado por ${actorId ? `admin ${actorId}` : 'admin'}.`,
+      `Participantes: ${participants.length}`,
+      `Vencedor${winners.length > 1 ? 'es' : ''}:`
+    ];
+
+    winners.forEach((item, index) => {
+      lines.push(`${index + 1}. ${item.label}`);
+    });
+
+    await this.send(session.chatId, lines.join('\n'));
+    return winners;
+  }
+
+  async handleCallbackQuery(query) {
+    const data = text(query?.data || '');
+    if (!data || (!data.startsWith('rfj:') && !data.startsWith('rfd:'))) {
+      return;
+    }
+
+    const match = data.match(/^rf([jd]):([a-z0-9]+)$/i);
+    const action = match?.[1];
+    const raffleId = text(match?.[2] || '');
+    const callbackId = text(query?.id || '');
+    const message = query?.message || null;
+    const from = query?.from || null;
+
+    const answer = async (messageText, showAlert = false) => {
+      if (!callbackId) {
+        return;
+      }
+      try {
+        await this.telegramClient.answerCallbackQuery(callbackId, {
+          text: String(messageText || '').slice(0, 180),
+          show_alert: showAlert
+        });
+      } catch (_error) {
+        // ignore callback answer errors
+      }
+    };
+
+    const session = this.raffleSessions.get(raffleId);
+    if (!session) {
+      await answer('Sorteio expirado ou inexistente.', true);
+      return;
+    }
+
+    const chatId = String(message?.chat?.id || '');
+    const messageId = Number(message?.message_id || 0);
+    if (!chatId || !messageId || chatId !== session.chatId || messageId !== Number(session.messageId || 0)) {
+      await answer('Esse botao nao pertence a este sorteio.', true);
+      return;
+    }
+
+    if (session.finished) {
+      await answer('Sorteio ja encerrado.', true);
+      return;
+    }
+
+    if (action === 'j') {
+      const participant = this.normalizeRaffleParticipant(from);
+      if (!participant.id) {
+        await answer('Nao foi possivel registrar sua participacao.', true);
+        return;
+      }
+
+      if (session.participants.has(participant.id)) {
+        await answer('Voce ja esta participando.');
+        return;
+      }
+
+      session.participants.set(participant.id, participant);
+      await this.updateRafflePanel(session);
+      await answer('Participacao confirmada!');
+      return;
+    }
+
+    if (action === 'd') {
+      const actorId = String(from?.id || '');
+      const isAdmin = await this.isChatAdmin(session.chatId, actorId);
+      if (!isAdmin) {
+        await answer('Apenas administradores podem sortear.', true);
+        return;
+      }
+
+      await this.finishRaffleSession(session, { actorId });
+      await answer('Sorteio finalizado.');
+    }
   }
 
   getTemplate(chatId, key, fallback) {
@@ -1642,47 +1858,44 @@ class CommandRouter {
     }
     if (key === 'fun.raffle') {
       const winnerCount = Number.isFinite(Number(ctx.args[0])) ? Math.floor(Number(ctx.args[0])) : 1;
-      const days = Number.isFinite(Number(ctx.args[1])) ? Math.floor(Number(ctx.args[1])) : 30;
-
-      if (winnerCount < 1 || winnerCount > 10 || days < 1 || days > 90) {
-        await this.reply(ctx, 'Uso: /sorteio [vencedores 1-10] [dias 1-90]');
+      if (winnerCount < 1 || winnerCount > 10) {
+        await this.reply(ctx, 'Uso: /sorteio [vencedores 1-10]');
         return;
       }
 
-      const pool = this.tokenModel.getChatActiveMembers(ctx.chatId, {
-        days,
-        limit: 1000
-      });
-
-      if (!pool.length) {
-        await this.reply(ctx, 'Nao ha participantes elegiveis ainda. Peca para o grupo enviar mensagens e tente novamente.');
+      const activeSession = this.getActiveRaffleSession(ctx.chatId);
+      if (activeSession) {
+        await this.reply(
+          ctx,
+          'Ja existe um sorteio ativo neste grupo. Use o botao "Sortear agora" da mensagem atual para finalizar.'
+        );
         return;
       }
 
-      const shuffled = [...pool];
-      for (let i = shuffled.length - 1; i > 0; i -= 1) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-      }
+      const session = {
+        id: this.createRaffleSessionId(),
+        chatId: ctx.chatId,
+        messageId: 0,
+        createdBy: ctx.userId,
+        createdAt: isoNow(),
+        winnerCount,
+        participants: new Map(),
+        finished: false,
+        winners: []
+      };
 
-      const amount = Math.min(winnerCount, shuffled.length);
-      const winners = shuffled.slice(0, amount);
-      const labels = winners.map((member, index) => {
-        const username = text(member.username);
-        const fullName = text([member.first_name, member.last_name].filter(Boolean).join(' '));
-        const label = username ? `@${username}` : fullName || `id:${member.user_id}`;
-        return `${index + 1}. ${label}`;
+      const sent = await this.send(ctx.chatId, this.buildRaffleMessage(session), {
+        reply_markup: this.buildRaffleKeyboard(session)
       });
 
-      await this.reply(
-        ctx,
-        [
-          `Sorteio concluido (${amount} vencedor${amount > 1 ? 'es' : ''})`,
-          `Participantes elegiveis: ${pool.length} (ultimos ${days} dia${days > 1 ? 's' : ''})`,
-          '',
-          ...labels
-        ].join('\n')
-      );
+      const messageId = Number(sent?.response?.message_id || 0);
+      if (!messageId) {
+        await this.reply(ctx, 'Nao foi possivel iniciar o sorteio. Tente novamente.');
+        return;
+      }
+
+      session.messageId = messageId;
+      this.raffleSessions.set(session.id, session);
     }
   }
 

@@ -59,7 +59,7 @@ class TelegramClient {
         dropPendingUpdates: false,
         polling: {
           timeout: 30,
-          allowedUpdates: ['message'],
+          allowedUpdates: ['message', 'callback_query'],
           ...this.pollingParams
         }
       });
@@ -128,6 +128,19 @@ class TelegramClient {
       const message = ctx?.update?.message || ctx?.message;
       Promise.resolve(handler(message)).catch((error) => {
         this.logger.error({ err: error.message }, 'telegram message handler failed');
+      });
+    });
+  }
+
+  onCallbackQuery(handler) {
+    if (!this.bot || typeof handler !== 'function') {
+      return;
+    }
+
+    this.bot.on('callback_query', (ctx) => {
+      const query = ctx?.update?.callback_query || ctx?.callbackQuery;
+      Promise.resolve(handler(query)).catch((error) => {
+        this.logger.error({ err: error.message }, 'telegram callback handler failed');
       });
     });
   }
@@ -583,6 +596,37 @@ class TelegramClient {
     }
 
     return this.bot.telegram.sendDice(chatId, { emoji });
+  }
+
+  async answerCallbackQuery(callbackQueryId, options = {}) {
+    if (!this.bot) {
+      return false;
+    }
+
+    const queryId = String(callbackQueryId || '').trim();
+    if (!queryId) {
+      return false;
+    }
+
+    return this.bot.telegram.answerCbQuery(queryId, options);
+  }
+
+  async editMessageText(chatId, messageId, text, options = {}) {
+    if (!this.bot) {
+      return false;
+    }
+
+    const targetChatId = String(chatId || '').trim();
+    const safeMessageId = Number(messageId || 0);
+    if (!targetChatId || !safeMessageId) {
+      throw new Error('chat id and message id are required');
+    }
+
+    return this.sendWithRetry(
+      targetChatId,
+      () => this.bot.telegram.editMessageText(targetChatId, safeMessageId, undefined, String(text || ''), options),
+      'editMessageText'
+    );
   }
 
   async setMyCommands(commands, options = {}) {

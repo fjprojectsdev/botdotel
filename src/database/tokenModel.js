@@ -422,7 +422,7 @@ const DEFAULT_COMMAND_ITEMS = [
     category: 'Diversao',
     name: '/sorteio',
     command_key: 'fun.raffle',
-    description: 'Sorteia participante ativo do grupo',
+    description: 'Inicia sorteio com botao Participar',
     aliases: 'sorteio,raffle,draw'
   },
   {
